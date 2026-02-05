@@ -1391,7 +1391,6 @@ class WP_to_CF_Site_Packager {
     window.fetch = function(url, options) {
         const urlString = typeof url === 'string' ? url : url.url;
         if (shouldIntercept(urlString)) {
-            console.log('[WP-to-CF] Intercepted fetch:', urlString);
             return Promise.resolve(new Response(JSON.stringify(getMockResponse(urlString)), {
                 status: 200, statusText: 'OK', headers: { 'Content-Type': 'application/json' }
             }));
@@ -1405,7 +1404,6 @@ class WP_to_CF_Site_Packager {
     XMLHttpRequest.prototype.open = function(method, url) {
         this._url = url;
         this._shouldIntercept = shouldIntercept(url);
-        if (this._shouldIntercept) console.log('[WP-to-CF] Intercepted XHR:', url);
         return originalOpen.apply(this, arguments);
     };
     
@@ -1425,8 +1423,6 @@ class WP_to_CF_Site_Packager {
         }
         return originalSend.apply(this, arguments);
     };
-    
-    console.log('[WP-to-CF] API Interceptor initialized');
 })();
 JAVASCRIPT;
     }

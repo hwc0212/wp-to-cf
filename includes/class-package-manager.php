@@ -21,14 +21,15 @@ class WP_to_CF_Package_Manager
     public function get_all_packages(): array
     {
         $upload_dir = wp_upload_dir();
-        $packages_dir = $upload_dir['basedir'];
+        // 导出器保存在 wptocf-exports 子目录
+        $packages_dir = $upload_dir['basedir'] . '/wptocf-exports';
         
-        // 查找所有 site-export-*.zip 文件
-        $pattern = $packages_dir . '/site-export-*.zip';
+        // 查找所有 static-site-*.zip 文件（导出器使用的命名格式）
+        $pattern = $packages_dir . '/static-site-*.zip';
         $files = glob($pattern);
         
         if (empty($files)) {
-            return [];
+            $files = [];
         }
         
         $packages = [];
@@ -37,13 +38,6 @@ class WP_to_CF_Package_Manager
             $filename = basename($file);
             $file_size = filesize($file);
             $file_time = filemtime($file);
-            
-            // 从文件名提取时间戳
-            if (preg_match('/site-export-(\d+)\.zip/', $filename, $matches)) {
-                $timestamp = $matches[1];
-            } else {
-                $timestamp = $file_time;
-            }
             
             $packages[] = [
                 'filename' => $filename,
@@ -74,10 +68,11 @@ class WP_to_CF_Package_Manager
     public function delete_package(string $filename): bool
     {
         $upload_dir = wp_upload_dir();
-        $file_path = $upload_dir['basedir'] . '/' . $filename;
+        // 文件在 wptocf-exports 子目录
+        $file_path = $upload_dir['basedir'] . '/wptocf-exports/' . $filename;
         
-        // 安全检查：确保文件名符合预期格式 (site-export-*.zip)
-        if (!preg_match('/^site-export-[a-z0-9\-]+\.zip$/i', $filename)) {
+        // 安全检查：确保文件名符合预期格式 (static-site-*.zip)
+        if (!preg_match('/^static-site-[a-z0-9\-]+\.zip$/i', $filename)) {
             WP_to_CF_Logger::error('Invalid package filename', ['filename' => $filename]);
             return false;
         }

@@ -23,7 +23,6 @@
 - WordPress 6.0+
 - PHP 7.3+（推荐 8.0+）
 - Cloudflare 账户（免费版即可）
-- Cloudflare Pages 项目
 
 ## 🚀 快速开始
 
@@ -37,27 +36,52 @@
 # 将插件文件夹复制到 wp-content/plugins/wp-to-cf/
 ```
 
-### 2. 配置 Cloudflare
+### 2. 配置 Cloudflare API（自动上传需要）
 
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
-2. 创建一个 Pages 项目（选择"直接上传"方式）
-3. 获取以下信息：
-   - **Account ID** - 在任意页面右侧边栏可见
-   - **API Token** - 创建具有 `Cloudflare Pages:Edit` 权限的 Token
-   - **Project Name** - 你创建的 Pages 项目名称
+> 如果只使用 ZIP 下载手动上传，可跳过此步骤。
+
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) → 我的个人资料 → [API 令牌](https://dash.cloudflare.com/profile/api-tokens)
+2. 点击「创建令牌」→ 选择「创建自定义令牌」
+3. 设置以下权限：
+
+| 权限 | 访问级别 |
+|------|----------|
+| 帐户 → Cloudflare Pages | 编辑 |
+| 区域 → 区域 | 读取（可选，用于获取域名列表） |
+
+4. 账户资源：包括 → 所有帐户（或选择特定账户）
+5. 区域资源：包括 → 所有区域（或选择特定区域）
+6. 点击「继续以显示摘要」→「创建令牌」→ 复制令牌
 
 ### 3. 插件配置
 
-1. 进入 WordPress 后台 → 设置 → WP to CF
-2. 填写 Cloudflare API 配置
-3. 设置生产域名（用于 SEO 标签重写）
-4. （可选）配置代码注入
+1. 进入 WordPress 后台 → WP to CF
+2. 填写 Cloudflare API 配置（Account ID、API Token、Project Name）
+3. 点击「验证并获取列表」确认配置正确
+4. 设置 Production Domain（用于 SEO 标签重写）
+5. （可选）配置代码注入
 
 ### 4. 导出部署
 
-1. 点击"全量上传"按钮
+**方式一：自动上传（推荐）**
+1. 点击「全量上传」或「增量上传」按钮
 2. 等待导出和部署完成
 3. 访问你的 Cloudflare Pages 域名查看静态站点
+
+**方式二：手动上传**
+1. 点击「导出为 ZIP」按钮
+2. 下载生成的 ZIP 文件
+3. 在 Cloudflare Pages 控制台手动上传
+
+### 5. 绑定自定义域名（首次部署后）
+
+1. 进入 Cloudflare 控制台 → Workers 和 Pages → 选择您的项目
+2. 点击「自定义域」选项卡 → 「设置自定义域」
+3. 输入您的域名（如 example.com 或 www.example.com）
+4. 如果域名已在 Cloudflare，DNS 记录会自动配置
+5. 如果域名在其他服务商，按提示添加 CNAME 记录指向 xxx.pages.dev
+
+> 域名绑定只需操作一次，后续部署会自动更新到绑定的域名。
 
 ## 🏗️ 架构说明
 
@@ -226,6 +250,26 @@ A: 插件已内置重试机制（最多 3 次）。如果持续失败，检查 C
 A: 目前需要全量重新导出。增量更新功能基于文件哈希，会自动跳过未变化的文件。
 
 ## 📝 更新日志
+
+### v1.3.0 (2026-02-05)
+- ✨ 新增脚本清理规则配置（用户可自定义）
+- ✨ 新增作者归档页及分页收集
+- ✨ 新增日期归档页（年/月）及分页收集
+- ✨ 修复博客列表页分页收集（支持自定义博客页面 URL）
+- ✨ 修复分类/标签分页计数（使用 term->count）
+- 🔧 移除不必要的 CSS hack，让 JS 正常执行
+- 🔧 优化 WooCommerce 产品分页计算
+- 🐛 修复 Elementor 轮播显示问题
+
+### v1.2.6-alpha (2026-02-04)
+- ✨ 新增 API 令牌设置指南（详细权限配置说明）
+- ✨ 新增自定义域名绑定指南
+- ✨ 新增凭证验证功能（验证并获取项目/域名列表）
+- ✨ Project Name 支持下拉选择已有项目或创建新项目
+- ✨ Production Domain 支持下拉选择已有域名
+- 🔧 优化 API 验证逻辑，减少所需权限
+- 🔧 移除环境健康状态面板，简化界面
+- 🔧 权限说明改为中文，更易理解
 
 ### v1.2.5-alpha2 (2026-02-04)
 - ✨ 添加代码注入功能（统计代码、GTM）

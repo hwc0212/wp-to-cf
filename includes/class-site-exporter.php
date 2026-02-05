@@ -70,82 +70,29 @@ class WP_to_CF_Site_Exporter
         return $this->cache;
     }
 
+    /**
+     * 导出静态站点为 ZIP
+     * 
+     * 逻辑：
+     * 1. 如果有缓存，先加载缓存内容
+     * 2. 重新收集页面和资源，更新变化的部分
+     * 3. 将完整缓存打包为 ZIP
+     */
     public function export_site()
     {
-        WP_to_CF_Logger::info('开始导出静态站点', ['incremental' => $this->incremental]);
+        WP_to_CF_Logger::info('开始导出静态站点');
         
         try {
             @set_time_limit(0);
             @ini_set('memory_limit', '512M');
             
-            $urls = $this->collect_page_urls();
-            WP_to_CF_Logger::info('收集到页面', ['count' => count($urls)]);
-            
-            $html_files = [];
-            foreach ($urls as $url => $file_path) {
-                $html = $this->fetch_page($url);
-                if ($html) {
-                    $this->extract_assets($html);
-                    $html_files[$file_path] = $html;
-                    $this->stats['html_files']++;
-                }
-            }
-            
-            WP_to_CF_Logger::info('发现资源', ['count' => count($this->collected_assets)]);
-            
-            $asset_files = $this->load_and_remap_assets();
-            $asset_files = $this->process_css_urls($asset_files);
-            
-            foreach ($html_files as $path => $html) {
-                $html_files[$path] = $this->process_html($html);
-            }
-            
-            // 合并所有文件用于缓存更新
-            $all_files = array_merge($html_files, $asset_files);
-            
-            // 始终更新缓存（无论是否增量模式）
             $cache = $this->get_cache();
-            $cache->update_files($all_files);
             
-            $zip_path = $this->create_zip($html_files, $asset_files);
-            
-            $zip_size = filesize($zip_path);
-            $upload_dir = wp_upload_dir();
-            $zip_url = str_replace($upload_dir['basedir'], $upload_dir['baseurl'], $zip_path);
-            
-            WP_to_CF_Logger::info('导出完成', $this->stats);
-            
-            return [
-                'success' => true,
-                'zip_path' => $zip_path,
-                'zip_url' => $zip_url,
-                'file_count' => array_sum($this->stats),
-                'zip_size' => $zip_size,
-                'zip_size_mb' => round($zip_size / 1024 / 1024, 2),
-                'stats' => $this->stats,
-            ];
-            
-        } catch (Exception $e) {
-            WP_to_CF_Logger::error('导出失败', ['error' => $e->getMessage()]);
-            return ['success' => false, 'error' => $e->getMessage()];
-        }
-    }
-    
-    /**
-     * 导出并直接部署到 Cloudflare（支持增量上传）
-     * Cloudflare 会自动跳过已存在的文件（基于 hash）
-     */
-    public function export_and_deploy()
-    {
-        WP_to_CF_Logger::info('开始导出并部署');
-        
-        try {
-            @set_time_limit(0);
-            @ini_set('memory_limit', '512M');
-            
+            // 收集页面 URL
             $urls = $this->collect_page_urls();
             WP_to_CF_Logger::info('收集到页面', ['count' => count($urls)]);
             
+            // 抓取页面并提取资源
             $html_files = [];
             foreach ($urls as $url => $file_path) {
                 $html = $this->fetch_page($url);
@@ -158,9 +105,11 @@ class WP_to_CF_Site_Exporter
             
             WP_to_CF_Logger::info('发现资源', ['count' => count($this->collected_assets)]);
             
+            // 加载并重映射资源
             $asset_files = $this->load_and_remap_assets();
             $asset_files = $this->process_css_urls($asset_files);
             
+            // 处理 HTML 中的路径
             foreach ($html_files as $path => $html) {
                 $html_files[$path] = $this->process_html($html);
             }
@@ -172,21 +121,117 @@ class WP_to_CF_Site_Exporter
             $main_sitemap = $this->determine_main_sitemap($sitemap_files);
             $robots_content = $this->generate_robots_txt(!empty($sitemap_files), $main_sitemap);
             
-            // 合并所有文件
-            $all_files = array_merge($html_files, $asset_files, $sitemap_files);
-            $all_files['robots.txt'] = $robots_content;
+            // 合并所有新生成的文件
+            $new_files = array_merge($html_files, $asset_files, $sitemap_files);
+            $new_files['robots.txt'] = $robots_content;
             
-            // 更新缓存
-            if ($this->cache) {
-                $this->cache->update_files($all_files);
+            // 更新缓存（只更新变化的文件）
+            $update_result = $cache->update_files($new_files);
+            WP_to_CF_Logger::info('缓存更新', $update_result);
+            
+            // 清理不再需要的文件
+            $pruned = $cache->prune(array_keys($new_files));
+            if ($pruned > 0) {
+                WP_to_CF_Logger::info('清理过期缓存', ['count' => $pruned]);
             }
             
-            WP_to_CF_Logger::info('导出完成，开始部署', [
+            // 从缓存获取所有文件并打包
+            $all_files = $cache->get_all_files();
+            $zip_path = $this->create_zip_from_files($all_files);
+            
+            $zip_size = filesize($zip_path);
+            $upload_dir = wp_upload_dir();
+            $zip_url = str_replace($upload_dir['basedir'], $upload_dir['baseurl'], $zip_path);
+            
+            WP_to_CF_Logger::info('导出完成', [
                 'total_files' => count($all_files),
                 'stats' => $this->stats,
             ]);
             
-            // 部署到 Cloudflare（Cloudflare 会自动去重）
+            return [
+                'success' => true,
+                'zip_path' => $zip_path,
+                'zip_url' => $zip_url,
+                'file_count' => count($all_files),
+                'zip_size' => $zip_size,
+                'zip_size_mb' => round($zip_size / 1024 / 1024, 2),
+                'stats' => $this->stats,
+                'cache_update' => $update_result,
+            ];
+            
+        } catch (Exception $e) {
+            WP_to_CF_Logger::error('导出失败', ['error' => $e->getMessage()]);
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+    
+    /**
+     * 全量上传到 Cloudflare
+     * 
+     * 逻辑：
+     * 1. 更新缓存（收集变化的文件）
+     * 2. 上传整个缓存到 Cloudflare（Cloudflare 会自动去重）
+     */
+    public function export_and_deploy()
+    {
+        WP_to_CF_Logger::info('开始全量上传');
+        
+        try {
+            @set_time_limit(0);
+            @ini_set('memory_limit', '512M');
+            
+            $cache = $this->get_cache();
+            
+            // 收集页面 URL
+            $urls = $this->collect_page_urls();
+            WP_to_CF_Logger::info('收集到页面', ['count' => count($urls)]);
+            
+            // 抓取页面并提取资源
+            $html_files = [];
+            foreach ($urls as $url => $file_path) {
+                $html = $this->fetch_page($url);
+                if ($html) {
+                    $this->extract_assets($html);
+                    $html_files[$file_path] = $html;
+                    $this->stats['html_files']++;
+                }
+            }
+            
+            WP_to_CF_Logger::info('发现资源', ['count' => count($this->collected_assets)]);
+            
+            // 加载并重映射资源
+            $asset_files = $this->load_and_remap_assets();
+            $asset_files = $this->process_css_urls($asset_files);
+            
+            // 处理 HTML 中的路径
+            foreach ($html_files as $path => $html) {
+                $html_files[$path] = $this->process_html($html);
+            }
+            
+            // 收集 sitemap
+            $sitemap_files = $this->collect_sitemaps();
+            
+            // 生成 robots.txt
+            $main_sitemap = $this->determine_main_sitemap($sitemap_files);
+            $robots_content = $this->generate_robots_txt(!empty($sitemap_files), $main_sitemap);
+            
+            // 合并所有新生成的文件
+            $new_files = array_merge($html_files, $asset_files, $sitemap_files);
+            $new_files['robots.txt'] = $robots_content;
+            
+            // 更新缓存
+            $update_result = $cache->update_files($new_files);
+            WP_to_CF_Logger::info('缓存更新', $update_result);
+            
+            // 清理不再需要的文件
+            $cache->prune(array_keys($new_files));
+            
+            // 从缓存获取所有文件
+            $all_files = $cache->get_all_files();
+            
+            WP_to_CF_Logger::info('开始部署', ['total_files' => count($all_files)]);
+            
+            // 部署到 Cloudflare
             $api = new WP_to_CF_Cloudflare_API();
             if (!$api->is_configured()) {
                 return ['success' => false, 'error' => 'Cloudflare API 未配置'];
@@ -200,15 +245,154 @@ class WP_to_CF_Site_Exporter
                     'deployment_id' => $deployment_id,
                     'file_count' => count($all_files),
                     'stats' => $this->stats,
+                    'cache_update' => $update_result,
                 ];
             } else {
                 return ['success' => false, 'error' => '部署失败'];
             }
             
         } catch (Exception $e) {
-            WP_to_CF_Logger::error('导出部署失败', ['error' => $e->getMessage()]);
+            WP_to_CF_Logger::error('全量上传失败', ['error' => $e->getMessage()]);
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+    
+    /**
+     * 增量上传到 Cloudflare
+     * 
+     * 逻辑：
+     * 1. 收集变化的文件
+     * 2. 只上传变化的文件（Cloudflare 会合并）
+     */
+    public function incremental_deploy()
+    {
+        WP_to_CF_Logger::info('开始增量上传');
+        
+        try {
+            @set_time_limit(0);
+            @ini_set('memory_limit', '512M');
+            
+            $cache = $this->get_cache();
+            
+            if (!$cache->is_valid()) {
+                return ['success' => false, 'error' => '请先执行全量上传以建立缓存'];
+            }
+            
+            // 收集页面 URL
+            $urls = $this->collect_page_urls();
+            
+            // 抓取页面并提取资源
+            $html_files = [];
+            foreach ($urls as $url => $file_path) {
+                $html = $this->fetch_page($url);
+                if ($html) {
+                    $this->extract_assets($html);
+                    $html_files[$file_path] = $html;
+                    $this->stats['html_files']++;
+                }
+            }
+            
+            // 加载并重映射资源
+            $asset_files = $this->load_and_remap_assets();
+            $asset_files = $this->process_css_urls($asset_files);
+            
+            // 处理 HTML 中的路径
+            foreach ($html_files as $path => $html) {
+                $html_files[$path] = $this->process_html($html);
+            }
+            
+            // 收集 sitemap
+            $sitemap_files = $this->collect_sitemaps();
+            
+            // 生成 robots.txt
+            $main_sitemap = $this->determine_main_sitemap($sitemap_files);
+            $robots_content = $this->generate_robots_txt(!empty($sitemap_files), $main_sitemap);
+            
+            // 合并所有新生成的文件
+            $new_files = array_merge($html_files, $asset_files, $sitemap_files);
+            $new_files['robots.txt'] = $robots_content;
+            
+            // 过滤出变化的文件
+            $filter_result = $cache->filter_changed_files($new_files);
+            $changed_files = $filter_result['changed'];
+            
+            WP_to_CF_Logger::info('增量分析', [
+                'changed' => count($changed_files),
+                'unchanged' => count($filter_result['unchanged']),
+            ]);
+            
+            if (empty($changed_files)) {
+                return [
+                    'success' => true,
+                    'deployment_id' => 'no-changes',
+                    'file_count' => 0,
+                    'message' => '没有文件变化，无需部署',
+                ];
+            }
+            
+            // 更新缓存（只保存变化的文件）
+            $cache->save_files($changed_files);
+            
+            // 清理不再需要的文件
+            $cache->prune(array_keys($new_files));
+            
+            // 部署变化的文件到 Cloudflare
+            // 注意：Cloudflare 需要完整的文件列表来创建部署
+            // 所以我们上传所有文件，但 Cloudflare 会自动跳过未变化的
+            $all_files = $cache->get_all_files();
+            
+            $api = new WP_to_CF_Cloudflare_API();
+            if (!$api->is_configured()) {
+                return ['success' => false, 'error' => 'Cloudflare API 未配置'];
+            }
+            
+            $deployment_id = $api->create_deployment($all_files);
+            
+            if ($deployment_id) {
+                return [
+                    'success' => true,
+                    'deployment_id' => $deployment_id,
+                    'file_count' => count($all_files),
+                    'changed_count' => count($changed_files),
+                    'stats' => $this->stats,
+                ];
+            } else {
+                return ['success' => false, 'error' => '部署失败'];
+            }
+            
+        } catch (Exception $e) {
+            WP_to_CF_Logger::error('增量上传失败', ['error' => $e->getMessage()]);
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+    
+    /**
+     * 从文件数组创建 ZIP
+     */
+    private function create_zip_from_files($files)
+    {
+        $upload_dir = wp_upload_dir();
+        $export_dir = $upload_dir['basedir'] . '/wptocf-exports/';
+        
+        if (!file_exists($export_dir)) {
+            wp_mkdir_p($export_dir);
+        }
+        
+        $zip_filename = 'static-site-' . date('Y-m-d-His') . '.zip';
+        $zip_path = $export_dir . $zip_filename;
+        
+        $zip = new ZipArchive();
+        if ($zip->open($zip_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new Exception('无法创建 ZIP 文件');
+        }
+        
+        foreach ($files as $path => $content) {
+            $zip->addFromString($path, $content);
+        }
+        
+        $zip->close();
+        
+        return $zip_path;
     }
     
     /**
@@ -234,6 +418,11 @@ class WP_to_CF_Site_Exporter
         $urls = [];
         $urls[$this->site_url . '/'] = 'index.html';
         
+        // 获取每页显示数量
+        $posts_per_page = (int) get_option('posts_per_page', 10);
+        if ($posts_per_page < 1) $posts_per_page = 10;
+        
+        // 收集所有文章和页面
         $posts = get_posts([
             'post_type' => ['post', 'page'],
             'post_status' => 'publish',
@@ -245,7 +434,108 @@ class WP_to_CF_Site_Exporter
             $urls[$permalink] = $this->url_to_file_path($permalink);
         }
         
+        // 收集博客文章列表及分页
+        $total_posts = (int) wp_count_posts('post')->publish;
+        $total_pages = ceil($total_posts / $posts_per_page);
+        
+        // 获取博客页面 URL
+        $blog_page_id = get_option('page_for_posts');
+        if ($blog_page_id) {
+            $blog_url = get_permalink($blog_page_id);
+            $urls[$blog_url] = $this->url_to_file_path($blog_url);
+        } else {
+            $blog_url = $this->site_url . '/';
+        }
+        
+        for ($i = 2; $i <= $total_pages; $i++) {
+            $page_url = rtrim($blog_url, '/') . '/page/' . $i . '/';
+            $urls[$page_url] = $this->url_to_file_path($page_url);
+        }
+        
+        // 收集分类归档及分页
+        $categories = get_terms(['taxonomy' => 'category', 'hide_empty' => true]);
+        if (!is_wp_error($categories)) {
+            foreach ($categories as $term) {
+                $link = get_term_link($term);
+                if (!is_wp_error($link)) {
+                    $urls[$link] = $this->url_to_file_path($link);
+                    
+                    $count = (int) $term->count;
+                    $term_pages = ceil($count / $posts_per_page);
+                    for ($i = 2; $i <= $term_pages; $i++) {
+                        $page_url = rtrim($link, '/') . '/page/' . $i . '/';
+                        $urls[$page_url] = $this->url_to_file_path($page_url);
+                    }
+                }
+            }
+        }
+        
+        // 收集标签归档及分页
+        $tags = get_terms(['taxonomy' => 'post_tag', 'hide_empty' => true]);
+        if (!is_wp_error($tags)) {
+            foreach ($tags as $term) {
+                $link = get_term_link($term);
+                if (!is_wp_error($link)) {
+                    $urls[$link] = $this->url_to_file_path($link);
+                    
+                    $count = (int) $term->count;
+                    $term_pages = ceil($count / $posts_per_page);
+                    for ($i = 2; $i <= $term_pages; $i++) {
+                        $page_url = rtrim($link, '/') . '/page/' . $i . '/';
+                        $urls[$page_url] = $this->url_to_file_path($page_url);
+                    }
+                }
+            }
+        }
+        
+        // 收集作者归档及分页
+        $authors = get_users(['has_published_posts' => ['post']]);
+        foreach ($authors as $author) {
+            $author_url = get_author_posts_url($author->ID);
+            $urls[$author_url] = $this->url_to_file_path($author_url);
+            
+            $author_posts = count_user_posts($author->ID, 'post', true);
+            $author_pages = ceil($author_posts / $posts_per_page);
+            for ($i = 2; $i <= $author_pages; $i++) {
+                $page_url = rtrim($author_url, '/') . '/page/' . $i . '/';
+                $urls[$page_url] = $this->url_to_file_path($page_url);
+            }
+        }
+        
+        // 收集日期归档（年/月）
+        global $wpdb;
+        $months = $wpdb->get_results("
+            SELECT DISTINCT YEAR(post_date) AS year, MONTH(post_date) AS month, COUNT(*) as count
+            FROM {$wpdb->posts}
+            WHERE post_type = 'post' AND post_status = 'publish'
+            GROUP BY YEAR(post_date), MONTH(post_date)
+            ORDER BY year DESC, month DESC
+        ");
+        
+        if ($months) {
+            foreach ($months as $m) {
+                $year_url = get_year_link($m->year);
+                $month_url = get_month_link($m->year, $m->month);
+                
+                $urls[$year_url] = $this->url_to_file_path($year_url);
+                $urls[$month_url] = $this->url_to_file_path($month_url);
+                
+                // 月份归档分页
+                $month_pages = ceil($m->count / $posts_per_page);
+                for ($i = 2; $i <= $month_pages; $i++) {
+                    $page_url = rtrim($month_url, '/') . '/page/' . $i . '/';
+                    $urls[$page_url] = $this->url_to_file_path($page_url);
+                }
+            }
+        }
+        
+        // WooCommerce 相关
         if (class_exists('WooCommerce')) {
+            // WooCommerce 每页产品数
+            $wc_per_page = (int) get_option('woocommerce_catalog_rows', 4) * (int) get_option('woocommerce_catalog_columns', 4);
+            if ($wc_per_page < 1) $wc_per_page = 12;
+            
+            // 收集所有产品
             $products = get_posts([
                 'post_type' => 'product',
                 'post_status' => 'publish',
@@ -257,24 +547,52 @@ class WP_to_CF_Site_Exporter
                 $urls[$permalink] = $this->url_to_file_path($permalink);
             }
             
-            $terms = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => true]);
-            if (!is_wp_error($terms)) {
-                foreach ($terms as $term) {
+            // 商店页面及分页
+            $shop_page_id = wc_get_page_id('shop');
+            if ($shop_page_id > 0) {
+                $shop_url = get_permalink($shop_page_id);
+                $urls[$shop_url] = $this->url_to_file_path($shop_url);
+                
+                $total_products = count($products);
+                $total_shop_pages = ceil($total_products / $wc_per_page);
+                for ($i = 2; $i <= $total_shop_pages; $i++) {
+                    $page_url = rtrim($shop_url, '/') . '/page/' . $i . '/';
+                    $urls[$page_url] = $this->url_to_file_path($page_url);
+                }
+            }
+            
+            // 产品分类及分页
+            $product_cats = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => true]);
+            if (!is_wp_error($product_cats)) {
+                foreach ($product_cats as $term) {
                     $link = get_term_link($term);
                     if (!is_wp_error($link)) {
                         $urls[$link] = $this->url_to_file_path($link);
+                        
+                        $count = (int) $term->count;
+                        $cat_pages = ceil($count / $wc_per_page);
+                        for ($i = 2; $i <= $cat_pages; $i++) {
+                            $page_url = rtrim($link, '/') . '/page/' . $i . '/';
+                            $urls[$page_url] = $this->url_to_file_path($page_url);
+                        }
                     }
                 }
             }
-        }
-        
-        foreach (['category', 'post_tag'] as $taxonomy) {
-            $terms = get_terms(['taxonomy' => $taxonomy, 'hide_empty' => true]);
-            if (!is_wp_error($terms)) {
-                foreach ($terms as $term) {
+            
+            // 产品标签及分页
+            $product_tags = get_terms(['taxonomy' => 'product_tag', 'hide_empty' => true]);
+            if (!is_wp_error($product_tags)) {
+                foreach ($product_tags as $term) {
                     $link = get_term_link($term);
                     if (!is_wp_error($link)) {
                         $urls[$link] = $this->url_to_file_path($link);
+                        
+                        $count = (int) $term->count;
+                        $tag_pages = ceil($count / $wc_per_page);
+                        for ($i = 2; $i <= $tag_pages; $i++) {
+                            $page_url = rtrim($link, '/') . '/page/' . $i . '/';
+                            $urls[$page_url] = $this->url_to_file_path($page_url);
+                        }
                     }
                 }
             }
@@ -1443,81 +1761,54 @@ class WP_to_CF_Site_Exporter
         $html = preg_replace('/<link[^>]+type=["\']application\/(json|xml)\+oembed["\'][^>]*>/i', '', $html);
         $html = preg_replace('/<link[^>]+rel=["\']alternate["\'][^>]+type=["\']application\/json["\'][^>]*>/i', '', $html);
         
-        // 移除 wp-includes/js 目录下的所有脚本（静态站点不需要这些 WordPress 核心 JS）
-        // 这包括 wp-emoji-loader, jquery-migrate, wp-embed 等
-        // 使用多种模式确保完全移除
+        // 使用用户配置的清理规则移除脚本
+        $html = $this->apply_script_cleanup_rules($html);
         
-        // 模式1: <script src="...wp-includes/js/..."></script>
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*[/\\\\]wp-includes[/\\\\]js[/\\\\][^"\']*["\'][^>]*></script>#is', '', $html);
-        
-        // 模式2: <script src="...wp-includes/js/..." ...></script> (带内容)
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*[/\\\\]wp-includes[/\\\\]js[/\\\\][^"\']*["\'][^>]*>.*?</script>#is', '', $html);
-        
-        // 模式3: 自闭合标签 <script src="...wp-includes/js/..." />
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*[/\\\\]wp-includes[/\\\\]js[/\\\\][^"\']*["\'][^>]*/>#is', '', $html);
-        
-        // 移除 wp-emoji 相关的内联脚本和样式
-        $html = preg_replace('/<script[^>]*>[^<]*wp-emoji[^<]*<\/script>/is', '', $html);
-        $html = preg_replace('/<script[^>]+id=["\']wp-emoji-settings["\'][^>]*>.*?<\/script>/is', '', $html);
+        // 移除 wp-emoji 相关的内联样式（这些不是脚本，单独处理）
         $html = preg_replace('/<style[^>]*>[^<]*img\.wp-smiley[^<]*<\/style>/is', '', $html);
-        $html = preg_replace('/<style[^>]*>[^<]*wp-emoji[^<]*<\/style>/is', '', $html);
         
-        // 移除 twemoji 脚本
-        $html = preg_replace('/<script[^>]+src=["\'][^"\']*twemoji[^"\']*["\'][^>]*>.*?<\/script>/is', '', $html);
+        // 清理 Elementor 配置脚本中的敏感路径（保留脚本，只清理 admin-ajax.php 和 wp-json）
+        // 这些配置对于 Elementor 的 slideshow/carousel 功能是必需的
+        $html = preg_replace_callback(
+            '#(<script[^>]+id=["\']elementor(?:-pro)?-frontend-js-before["\'][^>]*>)(.*?)(</script>)#is',
+            function($matches) {
+                $script_open = $matches[1];
+                $content = $matches[2];
+                $script_close = $matches[3];
+                
+                // 清理 ajaxurl（标准格式和转义格式）
+                $content = preg_replace('#"ajaxurl"\s*:\s*"[^"]*"#', '"ajaxurl":"/"', $content);
+                $content = preg_replace('#"ajaxurl"\s*:\s*\'[^\']*\'#', '"ajaxurl":"/"', $content);
+                
+                // 清理 rest URL（标准格式和转义格式）
+                $content = preg_replace('#"rest"\s*:\s*"[^"]*"#', '"rest":"/"', $content);
+                $content = preg_replace('#"rest"\s*:\s*\'[^\']*\'#', '"rest":"/"', $content);
+                
+                return $script_open . $content . $script_close;
+            },
+            $html
+        );
         
-        // 移除 WooCommerce AJAX 相关脚本（静态站点上不工作）
-        // 移除 wc-add-to-cart 及其内联配置
-        $html = preg_replace('#<script[^>]+id=["\']wc-add-to-cart-js-extra["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']wc-add-to-cart-js["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']wc-add-to-cart-js["\'][^>]*></script>#is', '', $html);
-        // 移除 woocommerce 主脚本及其内联配置
-        $html = preg_replace('#<script[^>]+id=["\']woocommerce-js-extra["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']woocommerce-js["\'][^>]*>.*?</script>#is', '', $html);
-        // 移除 wc-cart-fragments（购物车 AJAX）
-        $html = preg_replace('#<script[^>]+id=["\']wc-cart-fragments-js-extra["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']wc-cart-fragments-js["\'][^>]*>.*?</script>#is', '', $html);
-        // 移除 js.cookie（WooCommerce 依赖）
-        $html = preg_replace('#<script[^>]+id=["\']wc-js-cookie-js["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']wc-js-cookie-js["\'][^>]*></script>#is', '', $html);
-        // 移除所有包含 wc_add_to_cart_params 或 woocommerce_params 的内联脚本
-        $html = preg_replace('#<script[^>]*>.*?wc_add_to_cart_params.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]*>.*?woocommerce_params.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]*>.*?wc_cart_fragments_params.*?</script>#is', '', $html);
-        
-        // 移除 WordPress speculation rules（预加载规则，静态站点不需要）
-        $html = preg_replace('#<script[^>]+type=["\']speculationrules["\'][^>]*>.*?</script>#is', '', $html);
-        
-        // 移除 wp-i18n 相关脚本
-        $html = preg_replace('#<script[^>]+id=["\']wp-i18n-js-after["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']wp-i18n-js["\'][^>]*>.*?</script>#is', '', $html);
-        
-        // 移除 wp-emoji module 脚本（type="module" 的 emoji loader）
-        $html = preg_replace('#<script[^>]+type=["\']module["\'][^>]*>.*?wp-emoji-settings.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+type=["\']module["\'][^>]*>.*?wpEmojiSettings.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+type=["\']module["\'][^>]*>.*?_wpemojiSettings.*?</script>#is', '', $html);
-        
-        // 移除 wp-emoji-settings 的 JSON 数据
-        $html = preg_replace('#<script[^>]+id=["\']wp-emoji-settings["\'][^>]+type=["\']application/json["\'][^>]*>.*?</script>#is', '', $html);
-        
-        // 移除 Cloudflare Turnstile 相关脚本（静态站点上验证码不工作）
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*challenges\.cloudflare\.com/turnstile[^"\']*["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*challenges\.cloudflare\.com/turnstile[^"\']*["\'][^>]*></script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']cfturnstile[^"\']*["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']cfturnstile[^"\']*["\'][^>]*></script>#is', '', $html);
-        // 移除 Turnstile 配置脚本
-        $html = preg_replace('#<script[^>]*>.*?cfturnstile.*?</script>#is', '', $html);
-        
-        // 移除 jquery-migrate（静态站点不需要）
-        $html = preg_replace('#<script[^>]+id=["\']jquery-migrate-js["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']jquery-migrate-js["\'][^>]*></script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*jquery-migrate[^"\']*["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+src=["\'][^"\']*jquery-migrate[^"\']*["\'][^>]*></script>#is', '', $html);
-        
-        // 移除 Elementor 配置脚本（包含 admin-ajax.php 和 wp-json 路径）
-        $html = preg_replace('#<script[^>]+id=["\']elementor-pro-frontend-js-before["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]+id=["\']elementor-frontend-js-before["\'][^>]*>.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]*>\s*var\s+ElementorProFrontendConfig\s*=.*?</script>#is', '', $html);
-        $html = preg_replace('#<script[^>]*>\s*var\s+elementorFrontendConfig\s*=.*?</script>#is', '', $html);
+        // 同样处理直接定义的 elementorFrontendConfig 和 ElementorProFrontendConfig
+        $html = preg_replace_callback(
+            '#(<script[^>]*>)\s*(var\s+(?:elementorFrontendConfig|ElementorProFrontendConfig)\s*=\s*)(.*?)(;\s*(?://[^\n]*)?)(</script>)#is',
+            function($matches) {
+                $script_open = $matches[1];
+                $var_decl = $matches[2];
+                $json_content = $matches[3];
+                $ending = $matches[4];
+                $script_close = $matches[5];
+                
+                // 清理 ajaxurl
+                $json_content = preg_replace('#"ajaxurl"\s*:\s*"[^"]*"#', '"ajaxurl":"/"', $json_content);
+                
+                // 清理 rest URL
+                $json_content = preg_replace('#"rest"\s*:\s*"[^"]*"#', '"rest":"/"', $json_content);
+                
+                return $script_open . $var_decl . $json_content . $ending . $script_close;
+            },
+            $html
+        );
         
         // 移除 WooCommerce 订单追踪脚本（包含 admin-ajax.php）
         $html = preg_replace('#<script[^>]+id=["\']wc-order-attribution-js-extra["\'][^>]*>.*?</script>#is', '', $html);
@@ -1559,28 +1850,6 @@ class WP_to_CF_Site_Exporter
         );
         
         $html = preg_replace('/\n\s*\n\s*\n/', "\n\n", $html);
-        
-        // 注入 Elementor carousel 修复样式
-        // 静态站点上 Elementor JS 可能不执行，需要 CSS 回退
-        // 确保轮播有正确的尺寸和布局
-        $elementor_fix_css = '<style id="elementor-static-fix">'
-            // 主轮播样式
-            . '.elementor-skin-slideshow .elementor-main-swiper{width:100%;min-height:400px;}'
-            . '.elementor-skin-slideshow .elementor-main-swiper .swiper-slide{width:100%!important;min-height:400px;}'
-            . '.elementor-carousel-image{width:100%;min-height:300px;background-size:cover;background-position:center;}'
-            // 缩略图轮播样式
-            . '.elementor-thumbnails-swiper{width:100%;margin-top:10px;}'
-            . '.elementor-thumbnails-swiper .swiper-wrapper{display:flex;}'
-            . '.elementor-thumbnails-swiper .swiper-slide{flex:0 0 auto;width:calc(25% - 8px)!important;min-height:80px;margin-right:10px;}'
-            . '.elementor-thumbnails-swiper .swiper-slide:last-child{margin-right:0;}'
-            . '.elementor-thumbnails-swiper .elementor-carousel-image{width:100%;min-height:80px;padding-bottom:75%;}'
-            // Swiper fade 效果修复
-            . '.swiper-fade .swiper-slide{opacity:0!important;}'
-            . '.swiper-fade .swiper-slide-active{opacity:1!important;}'
-            . '</style>';
-        
-        // 在 </head> 前注入
-        $html = str_replace('</head>', $elementor_fix_css . '</head>', $html);
         
         // 重写 canonical URL 和 SEO meta 标签，使用生产域名
         $production_domain = get_option('wptocf_production_domain', '');
@@ -1905,5 +2174,145 @@ class WP_to_CF_Site_Exporter
         }
         
         return $content;
+    }
+    
+    /**
+     * 应用用户配置的脚本清理规则
+     * 
+     * @param string $html HTML 内容
+     * @return string 清理后的 HTML
+     */
+    private function apply_script_cleanup_rules($html)
+    {
+        // 获取用户配置的清理规则
+        $rules_text = get_option('wptocf_script_cleanup_rules', '');
+        
+        // 如果没有配置，使用默认规则
+        if (empty($rules_text)) {
+            $rules_text = $this->get_default_cleanup_rules();
+        }
+        
+        // 解析规则
+        $rules = $this->parse_cleanup_rules($rules_text);
+        
+        if (empty($rules)) {
+            return $html;
+        }
+        
+        // 匹配所有 <script> 标签（包括有内容和空标签）
+        $html = preg_replace_callback(
+            '#<script\b([^>]*)>(.*?)</script>#is',
+            function($match) use ($rules) {
+                $full_tag = $match[0];
+                $attrs = $match[1];
+                $content = $match[2];
+                
+                // 提取 src 属性
+                $src = '';
+                if (preg_match('/src=["\']([^"\']*)["\']/', $attrs, $src_match)) {
+                    $src = $src_match[1];
+                }
+                
+                // 提取 id 属性
+                $id = '';
+                if (preg_match('/id=["\']([^"\']*)["\']/', $attrs, $id_match)) {
+                    $id = $id_match[1];
+                }
+                
+                // 提取 type 属性
+                $type = '';
+                if (preg_match('/type=["\']([^"\']*)["\']/', $attrs, $type_match)) {
+                    $type = $type_match[1];
+                }
+                
+                // 检查是否匹配任何清理规则
+                foreach ($rules as $rule) {
+                    // 检查 src
+                    if (!empty($src) && stripos($src, $rule) !== false) {
+                        return ''; // 移除
+                    }
+                    // 检查 id
+                    if (!empty($id) && stripos($id, $rule) !== false) {
+                        return ''; // 移除
+                    }
+                    // 检查 type（用于 speculationrules 等）
+                    if (!empty($type) && stripos($type, $rule) !== false) {
+                        return ''; // 移除
+                    }
+                    // 检查内联脚本内容（用于 wp-emoji 等，只检查无 src 的脚本）
+                    if (empty($src) && !empty($content) && stripos($content, $rule) !== false) {
+                        return ''; // 移除
+                    }
+                }
+                
+                return $full_tag; // 保留
+            },
+            $html
+        );
+        
+        return $html;
+    }
+    
+    /**
+     * 解析清理规则文本
+     * 
+     * @param string $rules_text 规则文本（每行一个）
+     * @return array 规则数组
+     */
+    private function parse_cleanup_rules($rules_text)
+    {
+        $rules = [];
+        $lines = explode("\n", $rules_text);
+        
+        foreach ($lines as $line) {
+            $line = trim($line);
+            
+            // 跳过空行和注释
+            if (empty($line) || strpos($line, '#') === 0) {
+                continue;
+            }
+            
+            $rules[] = $line;
+        }
+        
+        return $rules;
+    }
+    
+    /**
+     * 获取默认清理规则
+     * 
+     * @return string 默认规则
+     */
+    private function get_default_cleanup_rules()
+    {
+        return implode("\n", [
+            '# WordPress 核心（静态站点不需要）',
+            'wp-emoji',
+            'wp-embed',
+            'jquery-migrate',
+            'wp-polyfill',
+            'wp-i18n',
+            '',
+            '# WooCommerce AJAX（静态站点不工作）',
+            'wc-add-to-cart',
+            'wc-cart-fragments',
+            'woocommerce.min.js',
+            'order-attribution',
+            'wc_add_to_cart_params',
+            'woocommerce_params',
+            'wc_cart_fragments_params',
+            '',
+            '# Contact Form 7（静态站点不工作）',
+            'contact-form-7',
+            'wpcf7',
+            '',
+            '# 其他不需要的',
+            'admin-bar',
+            'dashicons',
+            'speculationrules',
+            'challenges.cloudflare.com/turnstile',
+            'cfturnstile',
+            'twemoji',
+        ]);
     }
 }

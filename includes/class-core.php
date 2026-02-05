@@ -228,6 +228,10 @@ class WP_to_CF_Core
             // 缓存管理 AJAX
             add_action('wp_ajax_wptocf_get_cache_stats', [$settings_page, 'ajax_get_cache_stats']);
             add_action('wp_ajax_wptocf_clear_cache', [$settings_page, 'ajax_clear_cache']);
+            
+            // Cloudflare 配置 AJAX
+            add_action('wp_ajax_wptocf_validate_credentials', [$settings_page, 'ajax_validate_cf_credentials']);
+            add_action('wp_ajax_wptocf_create_project', [$settings_page, 'ajax_create_pages_project']);
         }
     }
 

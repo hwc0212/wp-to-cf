@@ -177,23 +177,27 @@ class WP_to_CF_Cache_Manager
             }
         }
         
-        // 清理导出缓存（数据库中的哈希缓存）
-        $export_cache_cleared = delete_option('wptocf_export_cache');
+        // 清理导出缓存（文件系统缓存）
+        require_once WPTOCF_PLUGIN_DIR . 'includes/class-export-cache.php';
+        $export_cache = new WP_to_CF_Export_Cache();
+        $export_stats = $export_cache->get_stats();
+        $export_cache->clear();
         
         WP_to_CF_Logger::info('Cache cleared', [
             'deleted_files' => $deleted_files,
             'freed_space_mb' => round($freed_space / 1024 / 1024, 2),
-            'export_cache_cleared' => $export_cache_cleared,
+            'export_cache_cleared' => $export_stats['file_count'],
         ]);
         
         return [
             'success' => true,
-            'deleted_files' => $deleted_files,
-            'freed_space' => $freed_space,
-            'freed_space_mb' => round($freed_space / 1024 / 1024, 2),
-            'export_cache_cleared' => $export_cache_cleared,
-            'message' => sprintf('已清理 %d 个文件，释放 %s MB 空间，导出缓存已清除', 
-                $deleted_files, round($freed_space / 1024 / 1024, 2)),
+            'deleted_files' => $deleted_files + $export_stats['file_count'],
+            'freed_space' => $freed_space + $export_stats['total_size'],
+            'freed_space_mb' => round(($freed_space + $export_stats['total_size']) / 1024 / 1024, 2),
+            'export_cache_cleared' => true,
+            'message' => sprintf('已清理 %d 个文件，释放 %s MB 空间', 
+                $deleted_files + $export_stats['file_count'], 
+                round(($freed_space + $export_stats['total_size']) / 1024 / 1024, 2)),
         ];
     }
     
@@ -207,29 +211,21 @@ class WP_to_CF_Cache_Manager
     {
         // 清理导出缓存（哈希缓存）
         if ($type === 'export') {
-            $export_cache_data = get_option('wptocf_export_cache', null);
-            $count = 0;
-            $size = 0;
-            
-            if ($export_cache_data && isset($export_cache_data['files'])) {
-                $count = count($export_cache_data['files']);
-                foreach ($export_cache_data['files'] as $file_data) {
-                    $size += $file_data['size'] ?? 0;
-                }
-            }
-            
-            delete_option('wptocf_export_cache');
+            require_once WPTOCF_PLUGIN_DIR . 'includes/class-export-cache.php';
+            $export_cache = new WP_to_CF_Export_Cache();
+            $stats = $export_cache->get_stats();
+            $export_cache->clear();
             
             WP_to_CF_Logger::info('Export cache cleared', [
-                'cleared_entries' => $count,
+                'cleared_entries' => $stats['file_count'],
             ]);
             
             return [
                 'success' => true,
-                'deleted_files' => $count,
-                'freed_space' => $size,
-                'freed_space_mb' => round($size / 1024 / 1024, 2),
-                'message' => sprintf('已清理 %d 条导出缓存记录', $count),
+                'deleted_files' => $stats['file_count'],
+                'freed_space' => $stats['total_size'],
+                'freed_space_mb' => $stats['total_size_mb'],
+                'message' => sprintf('已清理 %d 个导出缓存文件，释放 %s MB', $stats['file_count'], $stats['total_size_mb']),
             ];
         }
         

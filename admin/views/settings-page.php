@@ -10,9 +10,6 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// 获取环境状态
-$env_status = $this->get_environment_status();
-
 // 检查 Cloudflare 配置是否完整
 $cf_api = new WP_to_CF_Cloudflare_API();
 $cf_configured = $cf_api->is_configured();
@@ -27,112 +24,6 @@ $has_export_cache = $export_cache_data && isset($export_cache_data['files']) && 
 
     <?php settings_errors('wptocf_messages'); ?>
 
-    <!-- 环境健康状态面板 -->
-    <div class="wptocf-environment-status" style="background: white; border: 1px solid #c3c4c7; border-left: 4px solid <?php echo $env_status['encryption_available'] ? '#00a32a' : '#d63638'; ?>; padding: 15px; margin: 20px 0; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
-        <h2 style="margin-top: 0;">
-            <?php if ($env_status['encryption_available']): ?>
-                <span class="dashicons dashicons-yes-alt" style="color: #00a32a;"></span>
-                <?php esc_html_e('环境健康状态：正常', 'wp-to-cf'); ?>
-            <?php else: ?>
-                <span class="dashicons dashicons-warning" style="color: #d63638;"></span>
-                <?php esc_html_e('环境健康状态：需要注意', 'wp-to-cf'); ?>
-            <?php endif; ?>
-        </h2>
-
-        <table class="widefat" style="margin-top: 10px;">
-            <tbody>
-                <tr>
-                    <td style="width: 200px; font-weight: 600;">
-                        <?php esc_html_e('PHP 版本', 'wp-to-cf'); ?>
-                    </td>
-                    <td>
-                        <?php echo esc_html($env_status['php_version']); ?>
-                        <?php if ($env_status['php_version_ok']): ?>
-                            <span class="dashicons dashicons-yes" style="color: #00a32a;"></span>
-                            <span style="color: #00a32a;"><?php esc_html_e('符合要求 (>= 8.2)', 'wp-to-cf'); ?></span>
-                        <?php else: ?>
-                            <span class="dashicons dashicons-no" style="color: #d63638;"></span>
-                            <span style="color: #d63638;"><?php esc_html_e('需要 PHP 8.2 或更高版本', 'wp-to-cf'); ?></span>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <tr>
-                    <td style="font-weight: 600;">
-                        <?php esc_html_e('OpenSSL 扩展', 'wp-to-cf'); ?>
-                    </td>
-                    <td>
-                        <?php if ($env_status['openssl_loaded']): ?>
-                            <span class="dashicons dashicons-yes" style="color: #00a32a;"></span>
-                            <span style="color: #00a32a;"><?php esc_html_e('已加载', 'wp-to-cf'); ?></span>
-                        <?php else: ?>
-                            <span class="dashicons dashicons-no" style="color: #d63638;"></span>
-                            <span style="color: #d63638;"><?php esc_html_e('未加载 - 加密功能不可用', 'wp-to-cf'); ?></span>
-                            <p class="description" style="margin-top: 5px;">
-                                <?php esc_html_e('请联系主机提供商启用 OpenSSL PHP 扩展', 'wp-to-cf'); ?>
-                            </p>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <tr>
-                    <td style="font-weight: 600;">
-                        <?php esc_html_e('加密密钥 (AUTH_KEY)', 'wp-to-cf'); ?>
-                    </td>
-                    <td>
-                        <?php if ($env_status['auth_key_defined']): ?>
-                            <span class="dashicons dashicons-yes" style="color: #00a32a;"></span>
-                            <span style="color: #00a32a;"><?php esc_html_e('已配置', 'wp-to-cf'); ?></span>
-                        <?php else: ?>
-                            <span class="dashicons dashicons-no" style="color: #d63638;"></span>
-                            <span style="color: #d63638;"><?php esc_html_e('未配置 - 加密功能不可用', 'wp-to-cf'); ?></span>
-                            <p class="description" style="margin-top: 5px;">
-                                <?php 
-                                printf(
-                                    /* translators: %s: wp-config.php file path */
-                                    esc_html__('请在 %s 文件中定义 AUTH_KEY 常量', 'wp-to-cf'),
-                                    '<code>wp-config.php</code>'
-                                );
-                                ?>
-                                <br>
-                                <a href="https://api.wordpress.org/secret-key/1.1/salt/" target="_blank">
-                                    <?php esc_html_e('点击这里生成密钥', 'wp-to-cf'); ?>
-                                </a>
-                            </p>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <tr>
-                    <td style="font-weight: 600;">
-                        <?php esc_html_e('加密功能状态', 'wp-to-cf'); ?>
-                    </td>
-                    <td>
-                        <?php if ($env_status['encryption_available']): ?>
-                            <span class="dashicons dashicons-yes" style="color: #00a32a;"></span>
-                            <span style="color: #00a32a; font-weight: 600;"><?php esc_html_e('可用', 'wp-to-cf'); ?></span>
-                            <p class="description" style="margin-top: 5px;">
-                                <?php esc_html_e('API Token 将使用 AES-256-CBC 算法加密存储', 'wp-to-cf'); ?>
-                            </p>
-                        <?php else: ?>
-                            <span class="dashicons dashicons-no" style="color: #d63638;"></span>
-                            <span style="color: #d63638; font-weight: 600;"><?php esc_html_e('不可用', 'wp-to-cf'); ?></span>
-                            <p class="description" style="margin-top: 5px;">
-                                <?php esc_html_e('无法保存 API Token，请先解决上述环境问题', 'wp-to-cf'); ?>
-                            </p>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-
-    <?php if (!$env_status['encryption_available']): ?>
-        <div class="notice notice-error">
-            <p>
-                <strong><?php esc_html_e('警告：', 'wp-to-cf'); ?></strong>
-                <?php esc_html_e('加密功能不可用，无法保存 API Token。请先解决环境问题后再配置插件。', 'wp-to-cf'); ?>
-            </p>
-        </div>
-    <?php endif; ?>
-
     <form method="post" action="options.php">
         <?php
         // 输出设置部分（包含 WordPress Settings API 自动生成的 nonce）
@@ -140,13 +31,7 @@ $has_export_cache = $export_cache_data && isset($export_cache_data['files']) && 
         do_settings_sections('wp-to-cf-settings');
         
         // 提交按钮
-        submit_button(
-            __('保存设置', 'wp-to-cf'),
-            'primary',
-            'submit',
-            true,
-            $env_status['encryption_available'] ? [] : ['disabled' => 'disabled']
-        );
+        submit_button(__('保存设置', 'wp-to-cf'));
         ?>
     </form>
 
@@ -252,24 +137,20 @@ $has_export_cache = $export_cache_data && isset($export_cache_data['files']) && 
     <div class="wptocf-help" style="background: #f0f6fc; border: 1px solid #c3c4c7; border-left: 4px solid #2271b1; padding: 15px; margin: 20px 0;">
         <h3 style="margin-top: 0;">
             <span class="dashicons dashicons-info"></span>
-            <?php esc_html_e('配置帮助', 'wp-to-cf'); ?>
+            <?php esc_html_e('使用说明', 'wp-to-cf'); ?>
         </h3>
         <ul style="margin-left: 20px;">
             <li>
-                <strong><?php esc_html_e('Account ID:', 'wp-to-cf'); ?></strong>
-                <?php esc_html_e('登录 Cloudflare 控制台，在右侧边栏可以找到 Account ID', 'wp-to-cf'); ?>
+                <strong><?php esc_html_e('ZIP 下载（无需配置）:', 'wp-to-cf'); ?></strong>
+                <?php esc_html_e('点击「导出为 ZIP」按钮，下载后手动上传到 Cloudflare Pages 或其他静态托管服务', 'wp-to-cf'); ?>
             </li>
             <li>
-                <strong><?php esc_html_e('API Token:', 'wp-to-cf'); ?></strong>
-                <?php esc_html_e('在 Cloudflare 控制台 → 我的个人资料 → API 令牌 → 创建令牌，选择 "编辑 Cloudflare Pages" 模板', 'wp-to-cf'); ?>
-            </li>
-            <li>
-                <strong><?php esc_html_e('Project Name:', 'wp-to-cf'); ?></strong>
-                <?php esc_html_e('在 Cloudflare Pages 中创建的项目名称', 'wp-to-cf'); ?>
+                <strong><?php esc_html_e('自动上传（需要配置）:', 'wp-to-cf'); ?></strong>
+                <?php esc_html_e('填写 Cloudflare 凭证后，可使用「全量上传」或「增量上传」一键部署到 Cloudflare Pages', 'wp-to-cf'); ?>
             </li>
             <li>
                 <strong><?php esc_html_e('Production Domain:', 'wp-to-cf'); ?></strong>
-                <?php esc_html_e('您的公网域名，静态 HTML 中的所有内网链接将被替换为此域名', 'wp-to-cf'); ?>
+                <?php esc_html_e('静态 HTML 中的所有内网链接将被替换为此域名。无论使用哪种方式，都建议设置此项', 'wp-to-cf'); ?>
             </li>
         </ul>
     </div>
@@ -304,10 +185,83 @@ $has_export_cache = $export_cache_data && isset($export_cache_data['files']) && 
     padding: 10px;
     border-radius: 4px;
 }
+/* Combobox 样式 */
+.wptocf-combobox {
+    position: relative;
+    display: inline-block;
+}
+.wptocf-combobox-input {
+    padding-right: 30px !important;
+}
+.wptocf-combobox-arrow {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #666;
+    font-size: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+.wptocf-combobox-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #8c8f94;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    z-index: 1000;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.wptocf-combobox-dropdown li {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+}
+.wptocf-combobox-dropdown li:last-child {
+    border-bottom: none;
+}
+.wptocf-combobox-dropdown li:hover,
+.wptocf-combobox-dropdown li.selected {
+    background: #f0f6fc;
+}
+.wptocf-combobox.open .wptocf-combobox-dropdown {
+    display: block;
+}
+.wptocf-combobox.open .wptocf-combobox-arrow {
+    transform: translateY(-50%) rotate(180deg);
+}
+/* 可折叠指南样式 */
+.wptocf-toggle-guide {
+    margin-left: 5px;
+    text-decoration: none;
+}
+.wptocf-guide-panel {
+    border-radius: 4px;
+}
+.wptocf-guide-panel ol {
+    line-height: 1.8;
+}
 </style>
 
 <script>
 jQuery(document).ready(function($) {
+    // 折叠指南切换
+    $('.wptocf-toggle-guide').on('click', function(e) {
+        e.preventDefault();
+        var targetId = $(this).data('target');
+        var $target = $('#' + targetId);
+        $target.slideToggle(200);
+    });
+    
     // 更新进度
     function updateProgress($bar, $text, percent, message, elapsed) {
         $bar.css('width', percent + '%').text(Math.round(percent) + '%');
@@ -884,7 +838,7 @@ jQuery(document).ready(function($) {
         html += '<td style="padding-left: 20px;"><strong><?php esc_html_e('小计', 'wp-to-cf'); ?></strong></td>';
         html += '<td><strong>' + stats.export_cache_count + '</strong></td>';
         html += '<td><strong>' + stats.export_cache_size_mb + ' MB</strong></td>';
-        html += '<td><button class="button button-small wptocf-clear-cache-type" data-type="export"><?php esc_html_e('清理', 'wp-to-cf'); ?></button></td>';
+        html += '<td></td>';
         html += '</tr>';
         
         html += '<tr style="background: #2271b1; color: white; font-weight: bold;">';
@@ -928,34 +882,119 @@ jQuery(document).ready(function($) {
         });
     });
     
-    // 清理指定类型缓存
-    $(document).on('click', '.wptocf-clear-cache-type', function() {
-        var type = $(this).data('type');
-        
-        if (!confirm('<?php esc_html_e('确定要清理这个类型的缓存吗？', 'wp-to-cf'); ?>')) {
+    // 页面加载时刷新缓存统计
+    refreshCacheStats();
+    
+    // ========== Cloudflare 凭证验证 ==========
+    
+    // 项目列表数据
+    var projectList = [];
+    
+    // Combobox 功能
+    var $combobox = $('#wptocf-project-combobox');
+    var $input = $('#wptocf_project_name');
+    var $dropdown = $('#wptocf_project_dropdown');
+    var $arrow = $combobox.find('.wptocf-combobox-arrow');
+    
+    // 渲染下拉列表
+    function renderDropdown(filter) {
+        $dropdown.empty();
+        var filtered = projectList;
+        if (filter) {
+            filter = filter.toLowerCase();
+            filtered = projectList.filter(function(p) {
+                return p.name.toLowerCase().indexOf(filter) !== -1;
+            });
+        }
+        if (filtered.length === 0) {
+            $combobox.removeClass('open');
             return;
         }
+        filtered.forEach(function(project) {
+            $dropdown.append('<li data-value="' + project.name + '">' + project.name + '</li>');
+        });
+        $combobox.addClass('open');
+    }
+    
+    // 点击箭头切换下拉
+    $arrow.on('click', function(e) {
+        e.stopPropagation();
+        if ($combobox.hasClass('open')) {
+            $combobox.removeClass('open');
+        } else if (projectList.length > 0) {
+            renderDropdown('');
+        }
+    });
+    
+    // 输入时过滤
+    $input.on('input', function() {
+        if (projectList.length > 0) {
+            renderDropdown($(this).val());
+        }
+    });
+    
+    // 聚焦时显示下拉
+    $input.on('focus', function() {
+        if (projectList.length > 0 && !$combobox.hasClass('open')) {
+            renderDropdown($(this).val());
+        }
+    });
+    
+    // 选择项目
+    $dropdown.on('click', 'li', function() {
+        $input.val($(this).data('value'));
+        $combobox.removeClass('open');
+    });
+    
+    // 点击外部关闭下拉
+    $(document).on('click', function(e) {
+        if (!$(e.target).closest('.wptocf-combobox').length) {
+            $combobox.removeClass('open');
+        }
+    });
+    
+    // 验证凭证按钮
+    $('#wptocf-validate-btn').on('click', function() {
+        var $btn = $(this);
+        var $status = $('#wptocf-validate-status');
+        var accountId = $('#wptocf_account_id').val();
+        var apiToken = $('#wptocf_api_token').val();
+        
+        if (!accountId || !apiToken) {
+            $status.html('<span style="color: #d63638;"><?php esc_html_e('请先填写 Account ID 和 API Token', 'wp-to-cf'); ?></span>');
+            return;
+        }
+        
+        $btn.prop('disabled', true);
+        $status.html('<span class="spinner is-active" style="float: none; margin: 0;"></span> <?php esc_html_e('验证中...', 'wp-to-cf'); ?>');
         
         $.ajax({
             url: ajaxurl,
             type: 'POST',
             data: {
-                action: 'wptocf_clear_cache',
-                nonce: '<?php echo wp_create_nonce('wptocf_manage_cache'); ?>',
-                type: type
+                action: 'wptocf_validate_credentials',
+                nonce: '<?php echo wp_create_nonce('wptocf_validate_credentials'); ?>',
+                account_id: accountId,
+                api_token: apiToken
             },
             success: function(response) {
+                $btn.prop('disabled', false);
+                
                 if (response.success) {
-                    alert(response.data.message);
-                    refreshCacheStats();
+                    $status.html('<span style="color: #00a32a;"><span class="dashicons dashicons-yes"></span> ' + response.data.message + '</span>');
+                    
+                    // 保存项目列表
+                    projectList = response.data.projects || [];
+                    
                 } else {
-                    alert('<?php esc_html_e('清理失败', 'wp-to-cf'); ?>');
+                    $status.html('<span style="color: #d63638;"><span class="dashicons dashicons-no"></span> ' + response.data.message + '</span>');
                 }
+            },
+            error: function() {
+                $btn.prop('disabled', false);
+                $status.html('<span style="color: #d63638;"><?php esc_html_e('网络错误', 'wp-to-cf'); ?></span>');
             }
         });
     });
-    
-    // 页面加载时刷新缓存统计
-    refreshCacheStats();
 });
 </script>

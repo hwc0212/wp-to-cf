@@ -15,11 +15,16 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 global $wpdb;
 
 // 删除数据库表
-$table_queue = $wpdb->prefix . 'wptocf_queue';
-$table_ledger = $wpdb->prefix . 'wptocf_ledger';
+$tables = [
+    $wpdb->prefix . 'wptocf_queue',
+    $wpdb->prefix . 'wptocf_ledger',
+    $wpdb->prefix . 'wptocf_batches',
+    $wpdb->prefix . 'wptocf_deployment_queue',
+];
 
-$wpdb->query("DROP TABLE IF EXISTS {$table_queue}");
-$wpdb->query("DROP TABLE IF EXISTS {$table_ledger}");
+foreach ($tables as $table) {
+    $wpdb->query("DROP TABLE IF EXISTS {$table}");
+}
 
 // 删除所有配置选项
 $options = [
@@ -32,10 +37,35 @@ $options = [
     'wptocf_body_end_code',
     'wptocf_db_version',
     'wptocf_custom_redirects',
+    'wptocf_script_cleanup_rules',
 ];
 
 foreach ($options as $option) {
     delete_option($option);
+}
+
+// 清理缓存目录
+$upload_dir = wp_upload_dir();
+$cache_dirs = [
+    $upload_dir['basedir'] . '/wptocf-cache',
+    $upload_dir['basedir'] . '/wptocf-exports',
+];
+
+foreach ($cache_dirs as $dir) {
+    if (is_dir($dir)) {
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($files as $file) {
+            if ($file->isDir()) {
+                @rmdir($file->getRealPath());
+            } else {
+                @unlink($file->getRealPath());
+            }
+        }
+        @rmdir($dir);
+    }
 }
 
 // 清理所有计划任务

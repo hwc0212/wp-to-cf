@@ -213,6 +213,71 @@ class WP_to_CF_Settings_Page
             self::PAGE_SLUG,
             'wptocf_code_injection_section'
         );
+
+        // 脚本清理规则部分
+        add_settings_section(
+            'wptocf_script_cleanup_section',
+            __('脚本清理规则', 'wp-to-cf'),
+            [$this, 'render_script_cleanup_section'],
+            self::PAGE_SLUG
+        );
+
+        // 清理规则
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_script_cleanup_rules',
+            [
+                'type' => 'string',
+                'sanitize_callback' => [$this, 'sanitize_cleanup_rules'],
+                'default' => $this->get_default_cleanup_rules(),
+            ]
+        );
+
+        add_settings_field(
+            'wptocf_script_cleanup_rules',
+            __('清理规则列表', 'wp-to-cf'),
+            [$this, 'render_script_cleanup_rules_field'],
+            self::PAGE_SLUG,
+            'wptocf_script_cleanup_section'
+        );
+    }
+
+    /**
+     * 获取默认清理规则
+     * 
+     * @return string 默认规则（每行一个）
+     */
+    public function get_default_cleanup_rules(): string
+    {
+        return implode("\n", [
+            '# WordPress 核心（静态站点不需要）',
+            'wp-emoji',
+            'wp-embed',
+            'jquery-migrate',
+            'wp-polyfill',
+            'wp-i18n',
+            '',
+            '# WooCommerce AJAX（静态站点不工作）',
+            'wc-add-to-cart',
+            'wc-cart-fragments',
+            'woocommerce.min.js',
+            'order-attribution',
+            'wc_add_to_cart_params',
+            'woocommerce_params',
+            'wc_cart_fragments_params',
+            '',
+            '# Contact Form 7（静态站点不工作）',
+            'contact-form-7',
+            'wpcf7',
+            '',
+            '# 其他不需要的',
+            'admin-bar',
+            'dashicons',
+            'speculationrules',
+            'challenges.cloudflare.com/turnstile',
+            'cfturnstile',
+            'twemoji',
+        ]);
     }
 
     /**
@@ -436,7 +501,9 @@ class WP_to_CF_Settings_Page
      */
     public function render_cloudflare_section(): void
     {
-        echo '<p>' . esc_html__('配置 Cloudflare Pages 连接信息。这些信息可以在 Cloudflare 控制台中获取。', 'wp-to-cf') . '</p>';
+        ?>
+        <p><?php esc_html_e('配置 Cloudflare Pages 连接信息，用于自动上传功能。如果只使用 ZIP 下载手动上传，可跳过此配置。', 'wp-to-cf'); ?></p>
+        <?php
     }
 
     /**
@@ -489,15 +556,34 @@ class WP_to_CF_Settings_Page
                value="<?php echo esc_attr($display_value); ?>" 
                class="regular-text"
                placeholder="<?php echo $has_token ? esc_attr__('留空保持不变', 'wp-to-cf') : 'sk_test_...'; ?>">
+        <button type="button" id="wptocf-validate-btn" class="button button-secondary" style="margin-left: 10px;">
+            <span class="dashicons dashicons-yes-alt" style="vertical-align: middle;"></span>
+            <?php esc_html_e('验证并获取列表', 'wp-to-cf'); ?>
+        </button>
+        <span id="wptocf-validate-status" style="margin-left: 10px;"></span>
         <p class="description">
             <?php 
             if ($has_token) {
                 esc_html_e('API Token 已加密保存。留空保持不变，输入新值将覆盖。', 'wp-to-cf');
             } else {
-                esc_html_e('Cloudflare API Token，需要 Pages 权限', 'wp-to-cf');
+                esc_html_e('Cloudflare API Token，需要 Pages 编辑权限。', 'wp-to-cf');
             }
             ?>
+            <a href="javascript:void(0);" class="wptocf-toggle-guide" data-target="wptocf-api-guide"><?php esc_html_e('如何获取？', 'wp-to-cf'); ?></a>
         </p>
+        <div id="wptocf-api-guide" class="wptocf-guide-panel" style="display: none; background: #f0f6fc; border: 1px solid #c3c4c7; border-left: 4px solid #2271b1; padding: 12px 15px; margin: 10px 0 0 0; max-width: 600px;">
+            <ol style="margin: 0; padding-left: 20px;">
+                <li><?php esc_html_e('登录 Cloudflare 控制台', 'wp-to-cf'); ?> → <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank"><?php esc_html_e('我的个人资料 → API 令牌', 'wp-to-cf'); ?></a></li>
+                <li><?php esc_html_e('点击「创建令牌」→「创建自定义令牌」', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('权限设置：', 'wp-to-cf'); ?><strong><?php esc_html_e('帐户 → Cloudflare Pages → 编辑', 'wp-to-cf'); ?></strong></li>
+                <li><?php esc_html_e('账户资源：包括 → 所有帐户（或选择特定账户）', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('点击「继续以显示摘要」→「创建令牌」→ 复制令牌', 'wp-to-cf'); ?></li>
+            </ol>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #666;">
+                <span class="dashicons dashicons-lock" style="font-size: 14px;"></span>
+                <?php esc_html_e('令牌将使用 AES-256-CBC 加密存储。', 'wp-to-cf'); ?>
+            </p>
+        </div>
         <?php
     }
 
@@ -510,14 +596,19 @@ class WP_to_CF_Settings_Page
     {
         $value = get_option('wptocf_project_name', '');
         ?>
-        <input type="text" 
-               name="wptocf_project_name" 
-               id="wptocf_project_name" 
-               value="<?php echo esc_attr($value); ?>" 
-               class="regular-text"
-               placeholder="my-wordpress-site">
+        <div class="wptocf-combobox" id="wptocf-project-combobox">
+            <input type="text" 
+                   name="wptocf_project_name" 
+                   id="wptocf_project_name" 
+                   value="<?php echo esc_attr($value); ?>" 
+                   class="regular-text wptocf-combobox-input"
+                   placeholder="my-wordpress-site"
+                   autocomplete="off">
+            <span class="wptocf-combobox-arrow">▼</span>
+            <ul class="wptocf-combobox-dropdown" id="wptocf_project_dropdown"></ul>
+        </div>
         <p class="description">
-            <?php esc_html_e('Cloudflare Pages 项目名称', 'wp-to-cf'); ?>
+            <?php esc_html_e('Cloudflare Pages 项目名称。验证凭证后可从下拉列表选择已有项目，或输入新名称自动创建。', 'wp-to-cf'); ?>
         </p>
         <?php
     }
@@ -536,10 +627,23 @@ class WP_to_CF_Settings_Page
                id="wptocf_production_domain" 
                value="<?php echo esc_attr($value); ?>" 
                class="regular-text"
-               placeholder="example.com">
+               placeholder="www.example.com">
         <p class="description">
-            <?php esc_html_e('公网域名（不含 http://），例如：example.com 或 www.example.com', 'wp-to-cf'); ?>
+            <?php esc_html_e('公网域名（不含 http://）。示例：example.com、www.example.com、blog.example.com', 'wp-to-cf'); ?>
+            <a href="javascript:void(0);" class="wptocf-toggle-guide" data-target="wptocf-domain-guide"><?php esc_html_e('如何绑定域名？', 'wp-to-cf'); ?></a>
         </p>
+        <div id="wptocf-domain-guide" class="wptocf-guide-panel" style="display: none; background: #fff8e5; border: 1px solid #c3c4c7; border-left: 4px solid #dba617; padding: 12px 15px; margin: 10px 0 0 0; max-width: 600px;">
+            <p style="margin: 0 0 8px 0; font-weight: bold;"><?php esc_html_e('首次部署后在 Cloudflare 控制台绑定域名：', 'wp-to-cf'); ?></p>
+            <ol style="margin: 0; padding-left: 20px;">
+                <li><?php esc_html_e('进入 Workers 和 Pages → 选择您的项目', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('点击「自定义域」→「设置自定义域」', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('输入域名（如 example.com 或 www.example.com）', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('域名在 Cloudflare 则自动配置 DNS，否则按提示添加 CNAME 记录', 'wp-to-cf'); ?></li>
+            </ol>
+            <p style="margin: 8px 0 0 0; font-size: 12px; color: #666;">
+                <?php esc_html_e('域名绑定只需操作一次，后续部署会自动更新。', 'wp-to-cf'); ?>
+            </p>
+        </div>
         <?php
     }
 
@@ -598,6 +702,120 @@ class WP_to_CF_Settings_Page
             <?php esc_html_e('在 </body> 标签前注入的代码，例如聊天插件', 'wp-to-cf'); ?>
         </p>
         <?php
+    }
+
+    /**
+     * 渲染脚本清理规则部分说明
+     * 
+     * @return void
+     */
+    public function render_script_cleanup_section(): void
+    {
+        ?>
+        <p>
+            <?php esc_html_e('配置需要从静态页面中移除的脚本。静态站点上某些 WordPress 脚本无法正常工作（如 AJAX、后台功能），移除它们可以避免控制台错误。', 'wp-to-cf'); ?>
+        </p>
+        <p style="color: #666; font-size: 12px;">
+            <span class="dashicons dashicons-info" style="font-size: 14px;"></span>
+            <?php esc_html_e('提示：部署后在浏览器按 F12 打开开发者工具，查看 Console 中的错误，根据错误信息添加需要清理的脚本。', 'wp-to-cf'); ?>
+        </p>
+        <?php
+    }
+
+    /**
+     * 渲染脚本清理规则字段
+     * 
+     * @return void
+     */
+    public function render_script_cleanup_rules_field(): void
+    {
+        $value = get_option('wptocf_script_cleanup_rules', '');
+        if (empty($value)) {
+            $value = $this->get_default_cleanup_rules();
+        }
+        ?>
+        <textarea name="wptocf_script_cleanup_rules" 
+                  id="wptocf_script_cleanup_rules" 
+                  rows="15" 
+                  class="large-text code"
+                  style="font-family: monospace; font-size: 13px;"><?php echo esc_textarea($value); ?></textarea>
+        <p class="description">
+            <?php esc_html_e('每行一个规则，匹配脚本 src 或 id 属性。以 # 开头的行为注释。', 'wp-to-cf'); ?>
+            <a href="javascript:void(0);" class="wptocf-toggle-guide" data-target="wptocf-cleanup-guide"><?php esc_html_e('查看使用说明', 'wp-to-cf'); ?></a>
+        </p>
+        <div id="wptocf-cleanup-guide" class="wptocf-guide-panel" style="display: none; background: #f0f6fc; border: 1px solid #c3c4c7; border-left: 4px solid #2271b1; padding: 12px 15px; margin: 10px 0 0 0; max-width: 700px;">
+            <p style="margin: 0 0 10px 0; font-weight: bold;"><?php esc_html_e('如何添加清理规则：', 'wp-to-cf'); ?></p>
+            <ol style="margin: 0 0 10px 0; padding-left: 20px; line-height: 1.8;">
+                <li><?php esc_html_e('部署静态站点后，在浏览器按 F12 打开开发者工具', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('切换到 Console（控制台）标签，查看红色错误信息', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('找到报错的脚本文件名或关键词（如 wc-add-to-cart.min.js）', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('将关键词添加到上方规则列表（如 wc-add-to-cart）', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('保存设置并重新部署', 'wp-to-cf'); ?></li>
+            </ol>
+            <p style="margin: 0 0 8px 0; font-weight: bold;"><?php esc_html_e('规则匹配说明：', 'wp-to-cf'); ?></p>
+            <ul style="margin: 0; padding-left: 20px; line-height: 1.8;">
+                <li><code>wc-add-to-cart</code> → <?php esc_html_e('匹配 src 或 id 包含此关键词的脚本', 'wp-to-cf'); ?></li>
+                <li><code>wp-includes/js/wp-emoji</code> → <?php esc_html_e('匹配路径包含此字符串的脚本', 'wp-to-cf'); ?></li>
+                <li><code>speculationrules</code> → <?php esc_html_e('匹配 type="speculationrules" 的脚本', 'wp-to-cf'); ?></li>
+                <li><code># 这是注释</code> → <?php esc_html_e('以 # 开头的行会被忽略', 'wp-to-cf'); ?></li>
+            </ul>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #666;">
+                <span class="dashicons dashicons-info" style="font-size: 14px;"></span>
+                <?php esc_html_e('提示：规则越具体越好，避免误删需要的脚本。如果删错了导致功能异常，删除对应规则重新部署即可。', 'wp-to-cf'); ?>
+            </p>
+        </div>
+        <p style="margin-top: 10px;">
+            <button type="button" id="wptocf-reset-cleanup-rules" class="button button-secondary">
+                <span class="dashicons dashicons-undo" style="vertical-align: middle;"></span>
+                <?php esc_html_e('恢复默认规则', 'wp-to-cf'); ?>
+            </button>
+        </p>
+        <script>
+        jQuery(document).ready(function($) {
+            $('#wptocf-reset-cleanup-rules').on('click', function() {
+                if (confirm('<?php echo esc_js(__('确定要恢复默认清理规则吗？当前规则将被覆盖。', 'wp-to-cf')); ?>')) {
+                    $('#wptocf_script_cleanup_rules').val(<?php echo json_encode($this->get_default_cleanup_rules()); ?>);
+                }
+            });
+        });
+        </script>
+        <?php
+    }
+
+    /**
+     * 清理清理规则
+     * 
+     * @param string $value 规则内容
+     * @return string 清理后的规则
+     */
+    public function sanitize_cleanup_rules(string $value): string
+    {
+        // 验证 Nonce
+        if (!$this->verify_nonce()) {
+            WP_to_CF_Logger::error('Nonce verification failed in sanitize_cleanup_rules');
+            add_settings_error(
+                'wptocf_messages',
+                'wptocf_nonce_error',
+                __('安全验证失败，请刷新页面后重试', 'wp-to-cf'),
+                'error'
+            );
+            return get_option('wptocf_script_cleanup_rules', $this->get_default_cleanup_rules());
+        }
+
+        // 标准化换行符
+        $value = str_replace(["\r\n", "\r"], "\n", $value);
+        
+        // 移除空白行（但保留注释）
+        $lines = explode("\n", $value);
+        $cleaned_lines = [];
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+            if (!empty($trimmed)) {
+                $cleaned_lines[] = $trimmed;
+            }
+        }
+        
+        return implode("\n", $cleaned_lines);
     }
 
     /**
@@ -808,10 +1026,9 @@ class WP_to_CF_Settings_Page
         @set_time_limit(0);
         @ini_set('memory_limit', '1G');
 
-        // 执行增量导出和部署
+        // 执行增量部署
         $exporter = new WP_to_CF_Site_Exporter();
-        $exporter->enable_incremental(true);
-        $result = $exporter->export_and_deploy();
+        $result = $exporter->incremental_deploy();
 
         if (!$result['success']) {
             wp_send_json_error([
@@ -825,15 +1042,16 @@ class WP_to_CF_Settings_Page
         $production_domain = get_option('wptocf_production_domain', '');
         $deployment_url = !empty($production_domain) ? 'https://' . $production_domain : "https://{$project_name}.pages.dev";
 
+        $message = isset($result['changed_count']) 
+            ? sprintf(__('增量上传成功！%d 个文件变化，共 %d 个文件', 'wp-to-cf'), $result['changed_count'], $result['file_count'])
+            : ($result['message'] ?? sprintf(__('增量上传成功！共 %d 个文件', 'wp-to-cf'), $result['file_count']));
+
         wp_send_json_success([
-            'message' => sprintf(
-                __('增量上传成功！共 %d 个文件，部署 ID：%s', 'wp-to-cf'),
-                $result['file_count'],
-                $result['deployment_id']
-            ),
+            'message' => $message,
             'deployment_id' => $result['deployment_id'],
             'deployment_url' => $deployment_url,
             'file_count' => $result['file_count'],
+            'changed_count' => $result['changed_count'] ?? 0,
         ]);
     }
 
@@ -1006,5 +1224,110 @@ class WP_to_CF_Settings_Page
         }
 
         wp_send_json_success($result);
+    }
+
+    /**
+     * AJAX 处理器：验证 Cloudflare 凭证并获取项目/域名列表
+     */
+    public function ajax_validate_cf_credentials(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_validate_credentials')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $account_id = sanitize_text_field($_POST['account_id'] ?? '');
+        $api_token = sanitize_text_field($_POST['api_token'] ?? '');
+
+        if (empty($account_id) || empty($api_token)) {
+            wp_send_json_error(['message' => __('请填写 Account ID 和 API Token', 'wp-to-cf')]);
+            return;
+        }
+
+        // 如果 api_token 是脱敏的，使用已保存的
+        if (strpos($api_token, '••••') !== false) {
+            $encrypted_token = get_option('wptocf_api_token', '');
+            if (!empty($encrypted_token)) {
+                $api_token = WP_to_CF_Crypto::decrypt($encrypted_token);
+                if ($api_token === false) {
+                    wp_send_json_error(['message' => __('无法解密已保存的 API Token', 'wp-to-cf')]);
+                    return;
+                }
+            } else {
+                wp_send_json_error(['message' => __('请输入新的 API Token', 'wp-to-cf')]);
+                return;
+            }
+        }
+
+        // 验证凭证
+        $validation = WP_to_CF_Cloudflare_API::validate_credentials($account_id, $api_token);
+        if (!$validation['success']) {
+            wp_send_json_error(['message' => $validation['message']]);
+            return;
+        }
+
+        // 获取项目列表
+        $projects_result = WP_to_CF_Cloudflare_API::list_pages_projects($account_id, $api_token);
+        $projects = $projects_result['success'] ? $projects_result['projects'] : [];
+
+        // 获取域名列表
+        $zones_result = WP_to_CF_Cloudflare_API::list_zones($account_id, $api_token);
+        $zones = $zones_result['success'] ? $zones_result['zones'] : [];
+
+        wp_send_json_success([
+            'message' => __('验证成功', 'wp-to-cf'),
+            'account_name' => $validation['account_name'] ?? '',
+            'projects' => $projects,
+            'zones' => $zones,
+        ]);
+    }
+
+    /**
+     * AJAX 处理器：创建 Pages 项目
+     */
+    public function ajax_create_pages_project(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_create_project')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $account_id = sanitize_text_field($_POST['account_id'] ?? '');
+        $api_token = sanitize_text_field($_POST['api_token'] ?? '');
+        $project_name = sanitize_text_field($_POST['project_name'] ?? '');
+
+        if (empty($project_name)) {
+            wp_send_json_error(['message' => __('请输入项目名称', 'wp-to-cf')]);
+            return;
+        }
+
+        // 如果 api_token 是脱敏的，使用已保存的
+        if (strpos($api_token, '••••') !== false) {
+            $encrypted_token = get_option('wptocf_api_token', '');
+            if (!empty($encrypted_token)) {
+                $api_token = WP_to_CF_Crypto::decrypt($encrypted_token);
+            }
+        }
+
+        $result = WP_to_CF_Cloudflare_API::create_pages_project($account_id, $api_token, $project_name);
+        
+        if ($result['success']) {
+            wp_send_json_success([
+                'message' => $result['message'],
+                'project' => $result['project'],
+            ]);
+        } else {
+            wp_send_json_error(['message' => $result['message']]);
+        }
     }
 }

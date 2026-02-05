@@ -17,7 +17,7 @@ class WP_to_CF_Cloudflare_API
 {
     private const API_BASE_URL = 'https://api.cloudflare.com/client/v4';
     private const BUCKET_SIZE_LIMIT = 25 * 1024 * 1024; // 25MB per bucket
-    private const BUCKET_FILE_LIMIT = 300; // 最多300个文件每批
+    private const BUCKET_FILE_LIMIT = 200; // 最多200个文件每批（减少以避免超时）
     private const REQUEST_TIMEOUT = 180;
 
     private $account_id;
@@ -97,6 +97,11 @@ class WP_to_CF_Cloudflare_API
         WP_to_CF_Logger::info('Split into buckets', ['bucket_count' => count($buckets)]);
 
         foreach ($buckets as $i => $bucket) {
+            // 每个 bucket 前重置执行时间限制（共享主机可能有限制）
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(300);
+            }
+            
             WP_to_CF_Logger::info('Uploading bucket', [
                 'bucket' => $i + 1,
                 'total' => count($buckets),
@@ -108,9 +113,16 @@ class WP_to_CF_Cloudflare_API
                 WP_to_CF_Logger::error('Failed to upload bucket', ['bucket' => $i + 1]);
                 return false;
             }
+            
+            WP_to_CF_Logger::info('Bucket uploaded successfully', ['bucket' => $i + 1]);
 
             foreach ($bucket as $path => $data) {
                 $all_hashes[] = $data['hash'];
+            }
+            
+            // 在 bucket 之间添加短暂延迟，避免触发速率限制
+            if ($i < count($buckets) - 1) {
+                sleep(1);
             }
         }
 
@@ -559,5 +571,262 @@ class WP_to_CF_Cloudflare_API
 
         $data = json_decode(wp_remote_retrieve_body($response), true);
         return $data['result'] ?? false;
+    }
+
+    /**
+     * 验证 API 凭证
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @return array 验证结果
+     */
+    public static function validate_credentials(string $account_id, string $api_token): array
+    {
+        // 使用 Pages 项目列表端点验证，只需要 Cloudflare Pages 权限
+        $url = self::API_BASE_URL . "/accounts/{$account_id}/pages/projects";
+        
+        $response = wp_remote_get($url, [
+            'timeout' => 15,
+            'headers' => ['Authorization' => 'Bearer ' . $api_token],
+        ]);
+
+        if (is_wp_error($response)) {
+            return [
+                'success' => false,
+                'message' => '网络错误: ' . $response->get_error_message(),
+            ];
+        }
+
+        $status = wp_remote_retrieve_response_code($response);
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($status === 401 || $status === 403) {
+            return [
+                'success' => false,
+                'message' => 'API Token 无效或权限不足',
+            ];
+        }
+
+        if ($status === 404) {
+            return [
+                'success' => false,
+                'message' => 'Account ID 不存在',
+            ];
+        }
+
+        if ($status >= 200 && $status < 300 && ($data['success'] ?? false)) {
+            return [
+                'success' => true,
+                'message' => '验证成功',
+                'account_name' => '',
+            ];
+        }
+
+        return [
+            'success' => false,
+            'message' => $data['errors'][0]['message'] ?? '未知错误',
+        ];
+    }
+
+    /**
+     * 获取 Pages 项目列表
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @return array 项目列表
+     */
+    public static function list_pages_projects(string $account_id, string $api_token): array
+    {
+        $url = self::API_BASE_URL . "/accounts/{$account_id}/pages/projects";
+        
+        $response = wp_remote_get($url, [
+            'timeout' => 30,
+            'headers' => ['Authorization' => 'Bearer ' . $api_token],
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!($data['success'] ?? false)) {
+            return ['success' => false, 'message' => $data['errors'][0]['message'] ?? '获取项目列表失败'];
+        }
+
+        $projects = [];
+        foreach ($data['result'] ?? [] as $project) {
+            $projects[] = [
+                'name' => $project['name'],
+                'subdomain' => $project['subdomain'] ?? '',
+                'domains' => $project['domains'] ?? [],
+                'created_on' => $project['created_on'] ?? '',
+            ];
+        }
+
+        return ['success' => true, 'projects' => $projects];
+    }
+
+    /**
+     * 获取域名列表（Zones）
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @return array 域名列表
+     */
+    public static function list_zones(string $account_id, string $api_token): array
+    {
+        $url = self::API_BASE_URL . "/zones?account.id={$account_id}&per_page=50";
+        
+        $response = wp_remote_get($url, [
+            'timeout' => 30,
+            'headers' => ['Authorization' => 'Bearer ' . $api_token],
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!($data['success'] ?? false)) {
+            return ['success' => false, 'message' => $data['errors'][0]['message'] ?? '获取域名列表失败'];
+        }
+
+        $zones = [];
+        foreach ($data['result'] ?? [] as $zone) {
+            $zones[] = [
+                'id' => $zone['id'],
+                'name' => $zone['name'],
+                'status' => $zone['status'],
+            ];
+        }
+
+        return ['success' => true, 'zones' => $zones];
+    }
+
+    /**
+     * 创建 Pages 项目
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @param string $project_name 项目名称
+     * @return array 创建结果
+     */
+    public static function create_pages_project(string $account_id, string $api_token, string $project_name): array
+    {
+        $url = self::API_BASE_URL . "/accounts/{$account_id}/pages/projects";
+        
+        $response = wp_remote_post($url, [
+            'timeout' => 30,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api_token,
+                'Content-Type' => 'application/json',
+            ],
+            'body' => json_encode([
+                'name' => $project_name,
+                'production_branch' => 'main',
+            ]),
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $status = wp_remote_retrieve_response_code($response);
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($status >= 200 && $status < 300 && ($data['success'] ?? false)) {
+            return [
+                'success' => true,
+                'message' => '项目创建成功',
+                'project' => $data['result'],
+            ];
+        }
+
+        return [
+            'success' => false,
+            'message' => $data['errors'][0]['message'] ?? '创建项目失败',
+        ];
+    }
+
+    /**
+     * 获取 D1 数据库列表
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @return array 数据库列表
+     */
+    public static function list_d1_databases(string $account_id, string $api_token): array
+    {
+        $url = self::API_BASE_URL . "/accounts/{$account_id}/d1/database";
+        
+        $response = wp_remote_get($url, [
+            'timeout' => 30,
+            'headers' => ['Authorization' => 'Bearer ' . $api_token],
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!($data['success'] ?? false)) {
+            return ['success' => false, 'message' => $data['errors'][0]['message'] ?? '获取D1数据库列表失败'];
+        }
+
+        $databases = [];
+        foreach ($data['result'] ?? [] as $db) {
+            $databases[] = [
+                'uuid' => $db['uuid'],
+                'name' => $db['name'],
+                'created_at' => $db['created_at'] ?? '',
+            ];
+        }
+
+        return ['success' => true, 'databases' => $databases];
+    }
+
+    /**
+     * 创建 D1 数据库
+     * 
+     * @param string $account_id Account ID
+     * @param string $api_token API Token
+     * @param string $db_name 数据库名称
+     * @return array 创建结果
+     */
+    public static function create_d1_database(string $account_id, string $api_token, string $db_name): array
+    {
+        $url = self::API_BASE_URL . "/accounts/{$account_id}/d1/database";
+        
+        $response = wp_remote_post($url, [
+            'timeout' => 30,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api_token,
+                'Content-Type' => 'application/json',
+            ],
+            'body' => json_encode(['name' => $db_name]),
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $status = wp_remote_retrieve_response_code($response);
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($status >= 200 && $status < 300 && ($data['success'] ?? false)) {
+            return [
+                'success' => true,
+                'message' => 'D1 数据库创建成功',
+                'database' => $data['result'],
+            ];
+        }
+
+        return [
+            'success' => false,
+            'message' => $data['errors'][0]['message'] ?? '创建D1数据库失败',
+        ];
     }
 }

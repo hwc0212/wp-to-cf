@@ -390,9 +390,30 @@ class WP_to_CF_Site_Exporter
             $zip->addFromString($path, $content);
         }
         
+        // 添加表单处理相关文件
+        $this->add_form_handler_files($zip);
+        
         $zip->close();
         
         return $zip_path;
+    }
+    
+    /**
+     * 添加表单处理相关文件到 ZIP
+     */
+    private function add_form_handler_files($zip)
+    {
+        $plugin_dir = dirname(__DIR__);
+        $form_bridge_path = $plugin_dir . '/assets/js/form-bridge.js';
+        
+        // 添加 assets/js/form-bridge.js（如果文件存在）
+        if (file_exists($form_bridge_path)) {
+            $zip->addFile($form_bridge_path, 'assets/js/form-bridge.js');
+        }
+        
+        WP_to_CF_Logger::info('添加表单处理文件', [
+            'has_bridge' => file_exists($form_bridge_path),
+        ]);
     }
     
     /**
@@ -1106,10 +1127,10 @@ class WP_to_CF_Site_Exporter
         }
         
         $dir = match($type) {
-            'css' => 'css',
-            'js' => 'js',
-            'image' => 'images',
-            'font' => 'fonts',
+            'css' => 'assets/css',
+            'js' => 'assets/js',
+            'image' => 'assets/images',
+            'font' => 'assets/fonts',
             default => 'assets',
         };
         
@@ -1946,6 +1967,140 @@ class WP_to_CF_Site_Exporter
         // 注入自定义代码（统计代码、GTM 等）
         $injector = new WP_to_CF_Code_Injector();
         $html = $injector->inject_code($html);
+        
+        // 处理评论表单（添加隐藏字段用于同步）
+        $html = $this->process_comment_forms($html);
+        
+        // 注入表单处理脚本
+        $html = $this->inject_form_bridge_script($html);
+        
+        return $html;
+    }
+    
+    /**
+     * 处理评论表单
+     * 添加隐藏字段 _post_id 和 post_slug，用于同步时关联文章
+     */
+    private function process_comment_forms($html)
+    {
+        // 查找评论表单
+        // WordPress 评论表单通常有 id="commentform" 或 class="comment-form"
+        $html = preg_replace_callback(
+            '#<form([^>]*(?:id=["\']commentform["\']|class=["\'][^"\']*comment-form[^"\']*["\'])[^>]*)>(.*?)</form>#is',
+            function($matches) {
+                $form_attrs = $matches[1];
+                $form_content = $matches[2];
+                
+                // 从表单 action 中提取 post ID
+                // WordPress 评论表单的 action 通常是 /wp-comments-post.php
+                // 但我们需要从页面上下文获取 post_id
+                
+                // 尝试从表单内容中找到 comment_post_ID 隐藏字段
+                $post_id = 0;
+                if (preg_match('/name=["\']comment_post_ID["\'][^>]*value=["\'](\d+)["\']/', $form_content, $id_match)) {
+                    $post_id = intval($id_match[1]);
+                } elseif (preg_match('/value=["\'](\d+)["\'][^>]*name=["\']comment_post_ID["\']/', $form_content, $id_match)) {
+                    $post_id = intval($id_match[1]);
+                }
+                
+                // 如果找到了 post_id，获取 post_slug
+                $post_slug = '';
+                if ($post_id > 0) {
+                    $post = get_post($post_id);
+                    if ($post) {
+                        $post_slug = $post->post_name;
+                    }
+                }
+                
+                // 添加隐藏字段（用于同步时识别）
+                $hidden_fields = '';
+                if ($post_id > 0) {
+                    $hidden_fields .= '<input type="hidden" name="_post_id" value="' . $post_id . '">';
+                }
+                if (!empty($post_slug)) {
+                    $hidden_fields .= '<input type="hidden" name="post_slug" value="' . esc_attr($post_slug) . '">';
+                }
+                
+                // 添加表单标识（用于 form-bridge.js 识别）
+                if (strpos($form_attrs, 'data-form-id') === false) {
+                    $form_attrs .= ' data-form-id="commentform"';
+                }
+                
+                // 在表单开头添加隐藏字段
+                $form_content = $hidden_fields . $form_content;
+                
+                return '<form' . $form_attrs . '>' . $form_content . '</form>';
+            },
+            $html
+        );
+        
+        return $html;
+    }
+    
+    /**
+     * 注入表单处理脚本到 HTML
+     */
+    private function inject_form_bridge_script($html)
+    {
+        // 检查是否有表单配置
+        if (!class_exists('WP_to_CF_Form_Mapping_Admin')) {
+            return $html;
+        }
+        
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'wptocf_form_mappings';
+        
+        $forms_config = [];
+        
+        // 1. 添加评论表单配置（从评论同步设置）
+        $comment_service = get_option('wptocf_comment_service', '');
+        $comment_endpoint = get_option('wptocf_comment_endpoint', '');
+        if (!empty($comment_service) && !empty($comment_endpoint)) {
+            $forms_config['commentform'] = [
+                'service_type' => $comment_service,
+                'endpoint' => $comment_endpoint,
+                'redirect_url' => '',
+                'success_message' => '评论已提交，审核通过后将显示。',
+            ];
+        }
+        
+        // 2. 添加其他表单配置（从表单配置）
+        // 检查表是否存在
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name) {
+            $mappings = $wpdb->get_results("SELECT form_id, service_type, service_endpoint, redirect_url, success_message FROM $table_name WHERE enabled = 1", ARRAY_A);
+            
+            if (!empty($mappings)) {
+                foreach ($mappings as $mapping) {
+                    // 跳过 commentform，使用评论同步的配置
+                    if ($mapping['form_id'] === 'commentform') {
+                        continue;
+                    }
+                    $forms_config[$mapping['form_id']] = [
+                        'service_type' => $mapping['service_type'] ?? 'formspree',
+                        'endpoint' => $mapping['service_endpoint'],
+                        'redirect_url' => $mapping['redirect_url'],
+                        'success_message' => $mapping['success_message'] ?: '提交成功！',
+                    ];
+                }
+            }
+        }
+        
+        if (empty($forms_config)) {
+            return $html;
+        }
+        
+        // 生成配置脚本
+        $config_script = '<script>window.__WPTOCF_FORM_CONFIG__ = ' . json_encode([
+            'forms' => $forms_config,
+        ], JSON_UNESCAPED_UNICODE) . ';</script>';
+        
+        // 添加 form-bridge.js 引用
+        $bridge_script = '<script src="/assets/js/form-bridge.js" defer></script>';
+        
+        // 在 </body> 前注入
+        if (strpos($html, '</body>') !== false) {
+            $html = str_replace('</body>', $config_script . "\n" . $bridge_script . "\n</body>", $html);
+        }
         
         return $html;
     }

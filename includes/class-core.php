@@ -118,6 +118,11 @@ class WP_to_CF_Core
         require_once WPTOCF_PLUGIN_DIR . 'includes/class-package-manager.php';
         require_once WPTOCF_PLUGIN_DIR . 'includes/class-cache-manager.php';
         
+        // 加载表单处理相关类
+        require_once WPTOCF_PLUGIN_DIR . 'includes/class-form-mapping-admin.php';
+        require_once WPTOCF_PLUGIN_DIR . 'includes/class-form-scanner.php';
+        require_once WPTOCF_PLUGIN_DIR . 'includes/class-submission-sync.php';
+        
         // 后台管理
         if (is_admin()) {
             require_once WPTOCF_PLUGIN_DIR . 'admin/class-settings-page.php';
@@ -232,6 +237,25 @@ class WP_to_CF_Core
             // Cloudflare 配置 AJAX
             add_action('wp_ajax_wptocf_validate_credentials', [$settings_page, 'ajax_validate_cf_credentials']);
             add_action('wp_ajax_wptocf_create_project', [$settings_page, 'ajax_create_pages_project']);
+            
+            // 表单配置 AJAX
+            add_action('wp_ajax_wptocf_scan_forms', [$settings_page, 'ajax_scan_forms']);
+            add_action('wp_ajax_wptocf_get_form_mappings', [$settings_page, 'ajax_get_form_mappings']);
+            add_action('wp_ajax_wptocf_save_form_mapping', [$settings_page, 'ajax_save_form_mapping']);
+            add_action('wp_ajax_wptocf_delete_form_mapping', [$settings_page, 'ajax_delete_form_mapping']);
+            
+            // 表单配置管理
+            $form_admin = new WP_to_CF_Form_Mapping_Admin();
+            $form_admin->init();
+            
+            // 提交同步管理
+            $submission_sync = new WP_to_CF_Submission_Sync();
+            $submission_sync->init();
+            
+            // 提交同步 AJAX
+            add_action('wp_ajax_wptocf_sync_submissions', [$settings_page, 'ajax_sync_submissions']);
+            add_action('wp_ajax_wptocf_get_sync_stats', [$settings_page, 'ajax_get_sync_stats']);
+            add_action('wp_ajax_wptocf_delete_submission', [$settings_page, 'ajax_delete_submission']);
         }
     }
 

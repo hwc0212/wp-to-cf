@@ -240,6 +240,58 @@ class WP_to_CF_Settings_Page
             self::PAGE_SLUG,
             'wptocf_script_cleanup_section'
         );
+        
+        // 提交同步配置
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_getform_api_token',
+            [
+                'type' => 'string',
+                'sanitize_callback' => 'sanitize_text_field',
+                'default' => '',
+            ]
+        );
+        
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_cfform_api_key',
+            [
+                'type' => 'string',
+                'sanitize_callback' => 'sanitize_text_field',
+                'default' => '',
+            ]
+        );
+        
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_form_notify_email',
+            [
+                'type' => 'string',
+                'sanitize_callback' => 'sanitize_email',
+                'default' => '',
+            ]
+        );
+        
+        // 评论同步配置
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_comment_service',
+            [
+                'type' => 'string',
+                'sanitize_callback' => 'sanitize_text_field',
+                'default' => '',
+            ]
+        );
+        
+        register_setting(
+            self::OPTION_GROUP,
+            'wptocf_comment_endpoint',
+            [
+                'type' => 'string',
+                'sanitize_callback' => 'esc_url_raw',
+                'default' => '',
+            ]
+        );
     }
 
     /**
@@ -1328,6 +1380,252 @@ class WP_to_CF_Settings_Page
             ]);
         } else {
             wp_send_json_error(['message' => $result['message']]);
+        }
+    }
+
+    /**
+     * AJAX 处理器：扫描表单
+     */
+    public function ajax_scan_forms(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        // 检查是否强制刷新
+        $force_refresh = isset($_POST['force_refresh']) && $_POST['force_refresh'] === '1';
+        
+        // 尝试从缓存获取
+        if (!$force_refresh) {
+            $cached = get_transient('wptocf_scanned_forms');
+            if ($cached !== false) {
+                wp_send_json_success([
+                    'forms' => $cached['forms'],
+                    'count' => count($cached['forms']),
+                    'cached' => true,
+                    'scan_time' => $cached['scan_time'],
+                ]);
+                return;
+            }
+        }
+
+        $scanner = new WP_to_CF_Form_Scanner();
+        
+        // 先快速扫描数据库
+        $db_forms = $scanner->quick_scan();
+        
+        // 再扫描页面 HTML
+        $html_forms = $scanner->scan_all_forms();
+        
+        // 合并去重
+        $all_forms = [];
+        $seen_ids = [];
+        
+        foreach ($db_forms as $form) {
+            if (!in_array($form['form_id'], $seen_ids)) {
+                $all_forms[] = $form;
+                $seen_ids[] = $form['form_id'];
+            }
+        }
+        
+        foreach ($html_forms as $form) {
+            if (!in_array($form['form_id'], $seen_ids)) {
+                $all_forms[] = $form;
+                $seen_ids[] = $form['form_id'];
+            }
+        }
+        
+        // 缓存扫描结果（24小时）
+        $cache_data = [
+            'forms' => $all_forms,
+            'scan_time' => current_time('mysql'),
+        ];
+        set_transient('wptocf_scanned_forms', $cache_data, DAY_IN_SECONDS);
+
+        wp_send_json_success([
+            'forms' => $all_forms,
+            'count' => count($all_forms),
+            'cached' => false,
+            'scan_time' => $cache_data['scan_time'],
+        ]);
+    }
+
+    /**
+     * AJAX 处理器：获取表单配置列表
+     */
+    public function ajax_get_form_mappings(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $form_admin = new WP_to_CF_Form_Mapping_Admin();
+        $mappings = $form_admin->get_all_mappings();
+        $stats = $form_admin->get_stats();
+
+        wp_send_json_success([
+            'mappings' => $mappings,
+            'stats' => $stats,
+        ]);
+    }
+
+    /**
+     * AJAX 处理器：保存表单配置
+     */
+    public function ajax_save_form_mapping(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $data = [
+            'id' => intval($_POST['id'] ?? 0),
+            'form_id' => sanitize_text_field($_POST['form_id'] ?? ''),
+            'form_name' => sanitize_text_field($_POST['form_name'] ?? ''),
+            'service_type' => sanitize_text_field($_POST['service_type'] ?? 'formspree'),
+            'service_endpoint' => esc_url_raw($_POST['service_endpoint'] ?? ''),
+            'redirect_url' => sanitize_text_field($_POST['redirect_url'] ?? ''),
+            'success_message' => sanitize_textarea_field($_POST['success_message'] ?? ''),
+            'enabled' => intval($_POST['enabled'] ?? 1),
+        ];
+
+        $form_admin = new WP_to_CF_Form_Mapping_Admin();
+        $result = $form_admin->save_mapping($data);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+    
+    /**
+     * AJAX 处理器：获取支持的表单服务列表
+     */
+    public function ajax_get_form_services(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $services = WP_to_CF_Form_Mapping_Admin::get_supported_services();
+        wp_send_json_success(['services' => $services]);
+    }
+
+    /**
+     * AJAX 处理器：删除表单配置
+     */
+    public function ajax_delete_form_mapping(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $id = intval($_POST['id'] ?? 0);
+        if ($id <= 0) {
+            wp_send_json_error(['message' => __('无效的 ID', 'wp-to-cf')]);
+            return;
+        }
+
+        $form_admin = new WP_to_CF_Form_Mapping_Admin();
+        $result = $form_admin->delete_mapping($id);
+
+        if ($result) {
+            wp_send_json_success(['message' => __('删除成功', 'wp-to-cf')]);
+        } else {
+            wp_send_json_error(['message' => __('删除失败', 'wp-to-cf')]);
+        }
+    }
+    
+    /**
+     * AJAX 处理器：手动同步提交
+     */
+    public function ajax_sync_submissions(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $sync = new WP_to_CF_Submission_Sync();
+        $result = $sync->manual_sync();
+        
+        update_option('wptocf_last_sync_time', current_time('mysql'));
+
+        wp_send_json_success([
+            'message' => sprintf(__('同步完成，获取 %d 条新提交', 'wp-to-cf'), $result['synced']),
+            'synced' => $result['synced'],
+            'errors' => $result['errors'],
+        ]);
+    }
+    
+    /**
+     * AJAX 处理器：获取同步统计
+     */
+    public function ajax_get_sync_stats(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $sync = new WP_to_CF_Submission_Sync();
+        $stats = $sync->get_stats();
+        $recent = $sync->get_recent_submissions(10);
+
+        wp_send_json_success([
+            'stats' => $stats,
+            'recent' => $recent,
+        ]);
+    }
+    
+    /**
+     * AJAX 处理器：删除提交记录
+     */
+    public function ajax_delete_submission(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+
+        check_ajax_referer('wptocf_ajax', 'nonce');
+
+        $id = isset($_POST['id']) ? intval($_POST['id']) : 0;
+        
+        if (!$id) {
+            wp_send_json_error(['message' => __('无效的记录 ID', 'wp-to-cf')]);
+            return;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'wptocf_submissions';
+        
+        $deleted = $wpdb->delete($table_name, ['id' => $id], ['%d']);
+        
+        if ($deleted) {
+            wp_send_json_success(['message' => __('删除成功', 'wp-to-cf')]);
+        } else {
+            wp_send_json_error(['message' => __('删除失败', 'wp-to-cf')]);
         }
     }
 }

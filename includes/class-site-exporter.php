@@ -619,6 +619,46 @@ class WP_to_CF_Site_Exporter
             }
         }
         
+        // ── GML Translate: expand all URLs into language-prefixed variants ──────
+        // If the GML Translate plugin is active, every page must also be exported
+        // under each language prefix (e.g. /ru/about/, /es/shop/).
+        // GML uses wp_remote_get on the prefixed URL, which triggers the output
+        // buffer and returns the already-translated HTML — so we just need to
+        // add those URLs to the crawl list.
+        $gml_languages = get_option('gml_languages', []);
+        if (!empty($gml_languages) && get_option('gml_translation_enabled', false)) {
+            $source_urls = $urls; // snapshot before expansion
+            foreach ($gml_languages as $lang) {
+                $lang_code = $lang['code'] ?? '';
+                if (empty($lang_code)) continue;
+
+                foreach ($source_urls as $source_url => $file_path) {
+                    // Build the language-prefixed URL:
+                    // https://site.com/about/ → https://site.com/ru/about/
+                    $parsed   = parse_url($source_url);
+                    $path     = isset($parsed['path']) ? ltrim($parsed['path'], '/') : '';
+                    $lang_url = rtrim($this->site_url, '/') . '/' . $lang_code . '/' . $path;
+
+                    // Build the output file path:
+                    // about/index.html → ru/about/index.html
+                    if ($file_path === 'index.html') {
+                        $lang_file = $lang_code . '/index.html';
+                    } else {
+                        $lang_file = $lang_code . '/' . $file_path;
+                    }
+
+                    $urls[$lang_url] = $lang_file;
+                }
+            }
+
+            if (!empty($gml_languages)) {
+                WP_to_CF_Logger::info('GML Translate: added language URL variants', [
+                    'languages' => array_column($gml_languages, 'code'),
+                    'total_urls' => count($urls),
+                ]);
+            }
+        }
+
         return $urls;
     }
 
@@ -643,14 +683,35 @@ class WP_to_CF_Site_Exporter
         $response = wp_remote_get($url, [
             'timeout' => 30,
             'sslverify' => false,
+            'redirection' => 5,
+            'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'cookies' => [], // 确保不带登录 cookies
         ]);
         
         if (is_wp_error($response)) {
-            WP_to_CF_Logger::warning('抓取失败', ['url' => $url]);
+            WP_to_CF_Logger::warning('抓取失败', ['url' => $url, 'error' => $response->get_error_message()]);
             return false;
         }
         
-        return wp_remote_retrieve_body($response);
+        $status = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        
+        // 记录语言页面的抓取情况（调试用）
+        if (preg_match('#^/[a-z]{2}(/|$)#', parse_url($url, PHP_URL_PATH) ?? '')) {
+            WP_to_CF_Logger::info('语言页面抓取', [
+                'url' => $url,
+                'status' => $status,
+                'body_length' => strlen($body),
+                'title' => preg_match('/<title>([^<]{0,200})<\/title>/i', $body, $tm) ? $tm[1] : 'N/A',
+            ]);
+        }
+        
+        if ($status >= 400) {
+            WP_to_CF_Logger::warning('抓取返回错误状态', ['url' => $url, 'status' => $status]);
+            return false;
+        }
+        
+        return $body;
     }
 
     /**
@@ -1222,9 +1283,18 @@ class WP_to_CF_Site_Exporter
      */
     private function rewrite_css_urls($content, $css_path)
     {
+        // 计算 CSS 文件相对于根目录的深度，用于生成正确的相对路径
+        $css_dir = dirname($css_path);
+        if ($css_dir === '.' || $css_dir === '') {
+            $css_dir_depth = 0;
+        } else {
+            $css_dir_depth = substr_count($css_dir, '/') + 1;
+        }
+        $prefix = $css_dir_depth > 0 ? str_repeat('../', $css_dir_depth) : '';
+        
         return preg_replace_callback(
             '/url\(["\']?([^"\')\s]+)["\']?\)/i',
-            function($matches) use ($css_path) {
+            function($matches) use ($prefix) {
                 $url = $matches[1];
                 
                 if (strpos($url, 'data:') === 0) {
@@ -1233,9 +1303,9 @@ class WP_to_CF_Site_Exporter
                 
                 $new_url = $this->find_mapped_url($url);
                 if ($new_url) {
-                    // CSS 文件中使用相对路径
+                    // CSS 文件中使用相对路径，根据目录深度回退到根目录
                     if (strpos($new_url, '/') === 0) {
-                        $new_url = '..' . $new_url;
+                        $new_url = $prefix . ltrim($new_url, '/');
                     }
                     return 'url("' . $new_url . '")';
                 }
@@ -1620,6 +1690,29 @@ class WP_to_CF_Site_Exporter
                 $style_encoded = htmlspecialchars($style_decoded, ENT_QUOTES, 'UTF-8', false);
                 
                 return 'style=' . $quote . $style_encoded . $quote;
+            },
+            $html
+        );
+        
+        // 重写 <style> 标签中的 url() 路径（Oxygen Builder 等把背景图片写在内联 style 标签中）
+        $html = preg_replace_callback(
+            '/(<style\b[^>]*>)(.*?)(<\/style>)/is',
+            function($matches) {
+                $css = $matches[2];
+                if (strpos($css, 'url(') === false) {
+                    return $matches[0];
+                }
+                $css = preg_replace_callback(
+                    '/url\(["\']?([^"\')\s]+)["\']?\)/i',
+                    function($m) {
+                        if (strpos($m[1], 'data:') === 0) return $m[0];
+                        $url = strtok($m[1], '?');
+                        $new_path = $this->find_mapped_url($url);
+                        return 'url("' . ($new_path ?: $url) . '")';
+                    },
+                    $css
+                );
+                return $matches[1] . $css . $matches[3];
             },
             $html
         );
@@ -2469,5 +2562,206 @@ class WP_to_CF_Site_Exporter
             'cfturnstile',
             'twemoji',
         ]);
+    }
+
+    // ========================================================================
+    // 分块导出方法（解决共享主机超时问题）
+    // ========================================================================
+
+    /**
+     * 第一步：收集所有 URL 并保存到 transient
+     * 返回 URL 总数，供前端计算分批
+     */
+    public function chunked_collect_urls()
+    {
+        $urls = $this->collect_page_urls();
+        
+        // 保存 URL 列表到 transient（体积小，可以用 transient）
+        set_transient('wptocf_chunked_urls', $urls, 7200);
+        
+        // 清空之前的分块 HTML 缓存目录
+        $chunk_dir = $this->get_chunk_cache_dir();
+        $this->clear_chunk_cache($chunk_dir);
+        
+        return [
+            'success' => true,
+            'total' => count($urls),
+        ];
+    }
+
+    /**
+     * 第二步：抓取一批页面，保存 HTML 到文件系统
+     * 
+     * @param int $offset 起始偏移
+     * @param int $limit 每批数量
+     */
+    public function chunked_fetch_pages($offset, $limit)
+    {
+        @set_time_limit(300);
+        @ini_set('memory_limit', '512M');
+        
+        $urls = get_transient('wptocf_chunked_urls');
+        if (!$urls) {
+            return ['success' => false, 'error' => 'URL 列表已过期，请重新开始'];
+        }
+        
+        $chunk_dir = $this->get_chunk_cache_dir();
+        
+        // 取当前批次的 URL
+        $url_keys = array_keys($urls);
+        $batch_keys = array_slice($url_keys, $offset, $limit);
+        
+        $fetched = 0;
+        $failed = 0;
+        foreach ($batch_keys as $url) {
+            $file_path = $urls[$url];
+            $html = $this->fetch_page($url);
+            if ($html) {
+                // 保存到文件系统，用 file_path 的 md5 作为文件名
+                $cache_file = $chunk_dir . md5($file_path) . '.html';
+                file_put_contents($cache_file, $html);
+                // 同时保存路径映射
+                $map_file = $chunk_dir . md5($file_path) . '.path';
+                file_put_contents($map_file, $file_path);
+                $fetched++;
+            } else {
+                $failed++;
+            }
+        }
+        
+        $done = $offset + $limit;
+        $total = count($urls);
+        
+        return [
+            'success' => true,
+            'fetched' => $fetched,
+            'failed' => $failed,
+            'done' => min($done, $total),
+            'total' => $total,
+        ];
+    }
+
+    /**
+     * 第三步：处理资源 + 部署到 Cloudflare
+     * 此时所有 HTML 已经抓取完毕，只需处理资源和上传
+     */
+    public function chunked_process_and_deploy()
+    {
+        @set_time_limit(0);
+        @ini_set('memory_limit', '1G');
+        
+        $chunk_dir = $this->get_chunk_cache_dir();
+        
+        // 从文件系统加载所有 HTML
+        $html_files = [];
+        $path_files = glob($chunk_dir . '*.path');
+        if (empty($path_files)) {
+            return ['success' => false, 'error' => 'HTML 缓存为空，请重新开始'];
+        }
+        
+        foreach ($path_files as $path_file) {
+            $file_path = file_get_contents($path_file);
+            $hash = basename($path_file, '.path');
+            $html_file = $chunk_dir . $hash . '.html';
+            if (file_exists($html_file)) {
+                $html_files[$file_path] = file_get_contents($html_file);
+            }
+        }
+        
+        if (empty($html_files)) {
+            return ['success' => false, 'error' => 'HTML 缓存为空，请重新开始'];
+        }
+        
+        $cache = $this->get_cache();
+        
+        // 从所有 HTML 中提取资源
+        foreach ($html_files as $path => $html) {
+            $this->extract_assets($html);
+            $this->stats['html_files']++;
+        }
+        
+        WP_to_CF_Logger::info('分块部署：发现资源', ['count' => count($this->collected_assets)]);
+        
+        // 加载并重映射资源
+        $asset_files = $this->load_and_remap_assets();
+        $asset_files = $this->process_css_urls($asset_files);
+        
+        // 处理 HTML 中的路径
+        foreach ($html_files as $path => $html) {
+            $html_files[$path] = $this->process_html($html);
+        }
+        
+        // 收集 sitemap
+        $sitemap_files = $this->collect_sitemaps();
+        
+        // 生成 robots.txt
+        $main_sitemap = $this->determine_main_sitemap($sitemap_files);
+        $robots_content = $this->generate_robots_txt(!empty($sitemap_files), $main_sitemap);
+        
+        // 合并所有文件
+        $new_files = array_merge($html_files, $asset_files, $sitemap_files);
+        $new_files['robots.txt'] = $robots_content;
+        
+        // 更新缓存
+        $update_result = $cache->update_files($new_files);
+        $cache->prune(array_keys($new_files));
+        
+        // 获取所有缓存文件
+        $all_files = $cache->get_all_files();
+        
+        WP_to_CF_Logger::info('分块部署：开始上传', ['total_files' => count($all_files)]);
+        
+        // 部署到 Cloudflare
+        $api = new WP_to_CF_Cloudflare_API();
+        if (!$api->is_configured()) {
+            return ['success' => false, 'error' => 'Cloudflare API 未配置'];
+        }
+        
+        $deployment_id = $api->create_deployment($all_files);
+        
+        // 清理
+        delete_transient('wptocf_chunked_urls');
+        $this->clear_chunk_cache($chunk_dir);
+        
+        if ($deployment_id) {
+            return [
+                'success' => true,
+                'deployment_id' => $deployment_id,
+                'file_count' => count($all_files),
+                'stats' => $this->stats,
+                'cache_update' => $update_result,
+            ];
+        }
+        
+        return ['success' => false, 'error' => '部署失败'];
+    }
+    
+    /**
+     * 获取分块缓存目录
+     */
+    private function get_chunk_cache_dir()
+    {
+        $upload_dir = wp_upload_dir();
+        $dir = $upload_dir['basedir'] . '/wptocf-chunks/';
+        if (!file_exists($dir)) {
+            wp_mkdir_p($dir);
+            file_put_contents($dir . '.htaccess', 'Deny from all');
+            file_put_contents($dir . 'index.php', '<?php // Silence is golden');
+        }
+        return $dir;
+    }
+    
+    /**
+     * 清空分块缓存目录
+     */
+    private function clear_chunk_cache($dir)
+    {
+        if (!is_dir($dir)) return;
+        $files = glob($dir . '*.{html,path}', GLOB_BRACE);
+        if ($files) {
+            foreach ($files as $file) {
+                @unlink($file);
+            }
+        }
     }
 }

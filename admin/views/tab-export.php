@@ -142,7 +142,7 @@ jQuery(document).ready(function($) {
         });
     });
 
-    // 全量上传
+    // 全量上传（分块模式，解决共享主机超时）
     $('#wptocf-export-deploy-btn').on('click', function() {
         var $btn = $(this), $result = $('#wptocf-export-result'), $progress = $('#wptocf-export-progress');
         var $progressBar = $('#wptocf-export-progress-bar'), $progressText = $('#wptocf-export-progress-text');
@@ -150,46 +150,75 @@ jQuery(document).ready(function($) {
         $btn.addClass('loading').prop('disabled', true);
         $('#wptocf-export-btn, #wptocf-incremental-deploy-btn').prop('disabled', true);
         $result.hide(); $progress.show();
-        var startTime = Date.now(), progress = 0, stage = 0;
-        var stages = [{p:5,msg:'正在收集页面URL'},{p:15,msg:'正在抓取页面HTML'},{p:25,msg:'正在提取资源链接'},{p:40,msg:'正在加载CSS、JS、图片'},{p:50,msg:'正在处理路径映射'},{p:60,msg:'正在创建ZIP包'},{p:70,msg:'正在准备上传'},{p:80,msg:'正在上传到Cloudflare'},{p:90,msg:'正在等待部署'},{p:95,msg:'正在验证部署'}];
-        var progressInterval = setInterval(function() {
-            var elapsed = Math.round((Date.now() - startTime) / 1000);
-            if (stage < stages.length && progress < stages[stage].p) {
-                progress += 0.3;
-                if (progress >= stages[stage].p) { updateProgress($progressBar, $progressText, stages[stage].p, stages[stage].msg, elapsed); stage++; }
-            }
-        }, 200);
+        var startTime = Date.now();
+        var chunkedNonce = '<?php echo wp_create_nonce('wptocf_chunked_deploy'); ?>';
+        var BATCH_SIZE = 30;
+
+        function elapsed() { return Math.round((Date.now() - startTime) / 1000); }
+        function fail(msg) {
+            $btn.removeClass('loading').prop('disabled', false);
+            $('#wptocf-export-btn, #wptocf-incremental-deploy-btn').prop('disabled', false);
+            $progress.hide();
+            $result.html('<div class="wptocf-export-error"><p><strong>部署失败</strong></p><p>' + msg + '</p></div>').show();
+        }
+
+        // Step 1: 收集 URL
+        updateProgress($progressBar, $progressText, 2, '正在收集页面URL...', elapsed());
         $.ajax({
-            url: ajaxurl, type: 'POST', timeout: 1800000,
-            data: { action: 'wptocf_export_and_deploy', nonce: '<?php echo wp_create_nonce('wptocf_export_and_deploy'); ?>' },
-            success: function(response) {
-                clearInterval(progressInterval);
-                var elapsed = Math.round((Date.now() - startTime) / 1000);
-                $btn.removeClass('loading').prop('disabled', false);
-                $('#wptocf-export-btn, #wptocf-incremental-deploy-btn').prop('disabled', false);
-                if (response.success) {
-                    updateProgress($progressBar, $progressText, 100, '部署完成', elapsed);
-                    setTimeout(function() {
-                        $progress.hide();
-                        $result.html('<div class="wptocf-export-success"><p><strong>全量部署成功！</strong> 用时 ' + elapsed + ' 秒</p><p>' + response.data.message + '</p><p>部署ID: <code>' + response.data.deployment_id + '</code></p>' + (response.data.deployment_url ? '<p><a href="' + response.data.deployment_url + '" target="_blank" class="button button-primary">访问部署站点</a></p>' : '') + '</div>').show();
-                        refreshPackages(); refreshCacheStats();
-                    }, 500);
-                } else {
-                    $progress.hide();
-                    $result.html('<div class="wptocf-export-error"><p><strong>部署失败</strong></p><p>' + response.data.message + '</p></div>').show();
+            url: ajaxurl, type: 'POST', timeout: 120000,
+            data: { action: 'wptocf_chunked_collect', nonce: chunkedNonce },
+            success: function(resp) {
+                if (!resp.success) { fail(resp.data ? resp.data.message : '收集URL失败'); return; }
+                var total = resp.data.total;
+                updateProgress($progressBar, $progressText, 5, '收集到 ' + total + ' 个页面，开始抓取...', elapsed());
+
+                // Step 2: 分批抓取
+                var offset = 0;
+                function fetchBatch() {
+                    if (offset >= total) {
+                        // Step 3: 处理资源并部署
+                        updateProgress($progressBar, $progressText, 75, '页面抓取完成，正在处理资源并上传...', elapsed());
+                        $.ajax({
+                            url: ajaxurl, type: 'POST', timeout: 600000,
+                            data: { action: 'wptocf_chunked_deploy', nonce: chunkedNonce },
+                            success: function(resp3) {
+                                if (!resp3.success) { fail(resp3.data ? resp3.data.message : '部署失败'); return; }
+                                var e = elapsed();
+                                updateProgress($progressBar, $progressText, 100, '部署完成', e);
+                                setTimeout(function() {
+                                    $btn.removeClass('loading').prop('disabled', false);
+                                    $('#wptocf-export-btn, #wptocf-incremental-deploy-btn').prop('disabled', false);
+                                    $progress.hide();
+                                    $result.html('<div class="wptocf-export-success"><p><strong>全量部署成功！</strong> 用时 ' + e + ' 秒</p><p>' + resp3.data.message + '</p><p>部署ID: <code>' + resp3.data.deployment_id + '</code></p>' + (resp3.data.deployment_url ? '<p><a href="' + resp3.data.deployment_url + '" target="_blank" class="button button-primary">访问部署站点</a></p>' : '') + '</div>').show();
+                                    refreshPackages(); refreshCacheStats();
+                                }, 500);
+                            },
+                            error: function(xhr, status) { fail('处理/部署阶段网络错误: ' + status); }
+                        });
+                        return;
+                    }
+
+                    var pct = 5 + Math.round((offset / total) * 70);
+                    updateProgress($progressBar, $progressText, pct, '正在抓取页面 ' + offset + '/' + total + '...', elapsed());
+
+                    $.ajax({
+                        url: ajaxurl, type: 'POST', timeout: 300000,
+                        data: { action: 'wptocf_chunked_fetch', nonce: chunkedNonce, offset: offset, limit: BATCH_SIZE },
+                        success: function(resp2) {
+                            if (!resp2.success) { fail(resp2.data ? resp2.data.message : '抓取页面失败'); return; }
+                            offset += BATCH_SIZE;
+                            fetchBatch();
+                        },
+                        error: function(xhr, status) { fail('抓取页面网络错误 (offset=' + offset + '): ' + status); }
+                    });
                 }
+                fetchBatch();
             },
-            error: function(xhr, status) {
-                clearInterval(progressInterval);
-                $btn.removeClass('loading').prop('disabled', false);
-                $('#wptocf-export-btn, #wptocf-incremental-deploy-btn').prop('disabled', false);
-                $progress.hide();
-                $result.html('<div class="wptocf-export-error"><p><strong>部署失败</strong></p><p>网络错误: ' + status + '</p></div>').show();
-            }
+            error: function(xhr, status) { fail('收集URL网络错误: ' + status); }
         });
     });
 
-    // 增量上传
+    // 增量上传（分块模式）
     $('#wptocf-incremental-deploy-btn').on('click', function() {
         var $btn = $(this), $result = $('#wptocf-export-result'), $progress = $('#wptocf-export-progress');
         var $progressBar = $('#wptocf-export-progress-bar'), $progressText = $('#wptocf-export-progress-text');
@@ -198,44 +227,71 @@ jQuery(document).ready(function($) {
         $('#wptocf-export-btn, #wptocf-export-deploy-btn').prop('disabled', true);
         $result.hide(); $progress.show();
         $progressBar.css('background', 'linear-gradient(90deg, #00a32a, #46b450)');
-        var startTime = Date.now(), progress = 0, stage = 0;
-        var stages = [{p:5,msg:'正在收集页面URL'},{p:15,msg:'正在抓取页面HTML'},{p:25,msg:'正在提取资源链接'},{p:40,msg:'正在加载CSS、JS、图片'},{p:50,msg:'正在处理路径映射'},{p:60,msg:'正在比对缓存'},{p:70,msg:'正在准备上传'},{p:80,msg:'正在增量上传'},{p:90,msg:'正在等待部署'},{p:95,msg:'正在验证部署'}];
-        var progressInterval = setInterval(function() {
-            var elapsed = Math.round((Date.now() - startTime) / 1000);
-            if (stage < stages.length && progress < stages[stage].p) {
-                progress += 0.3;
-                if (progress >= stages[stage].p) { updateProgress($progressBar, $progressText, stages[stage].p, stages[stage].msg, elapsed); stage++; }
-            }
-        }, 200);
+        var startTime = Date.now();
+        var chunkedNonce = '<?php echo wp_create_nonce('wptocf_chunked_deploy'); ?>';
+        var BATCH_SIZE = 30;
+
+        function elapsed() { return Math.round((Date.now() - startTime) / 1000); }
+        function fail(msg) {
+            $btn.removeClass('loading').prop('disabled', false);
+            $('#wptocf-export-btn, #wptocf-export-deploy-btn').prop('disabled', false);
+            $progressBar.css('background', 'linear-gradient(90deg, #2271b1, #72aee6)');
+            $progress.hide();
+            $result.html('<div class="wptocf-export-error"><p><strong>增量部署失败</strong></p><p>' + msg + '</p></div>').show();
+        }
+
+        // 使用同样的分块流程
+        updateProgress($progressBar, $progressText, 2, '正在收集页面URL...', elapsed());
         $.ajax({
-            url: ajaxurl, type: 'POST', timeout: 1800000,
-            data: { action: 'wptocf_incremental_deploy', nonce: '<?php echo wp_create_nonce('wptocf_incremental_deploy'); ?>' },
-            success: function(response) {
-                clearInterval(progressInterval);
-                var elapsed = Math.round((Date.now() - startTime) / 1000);
-                $btn.removeClass('loading').prop('disabled', false);
-                $('#wptocf-export-btn, #wptocf-export-deploy-btn').prop('disabled', false);
-                $progressBar.css('background', 'linear-gradient(90deg, #2271b1, #72aee6)');
-                if (response.success) {
-                    updateProgress($progressBar, $progressText, 100, '增量部署完成', elapsed);
-                    setTimeout(function() {
-                        $progress.hide();
-                        $result.html('<div class="wptocf-export-success" style="border-left-color:#00a32a;"><p><strong>增量部署成功！</strong> 用时 ' + elapsed + ' 秒</p><p>' + response.data.message + '</p><p>部署ID: <code>' + response.data.deployment_id + '</code></p>' + (response.data.deployment_url ? '<p><a href="' + response.data.deployment_url + '" target="_blank" class="button button-primary" style="background:#00a32a;border-color:#00a32a;">访问部署站点</a></p>' : '') + '</div>').show();
-                        refreshCacheStats();
-                    }, 500);
-                } else {
-                    $progress.hide();
-                    $result.html('<div class="wptocf-export-error"><p><strong>增量部署失败</strong></p><p>' + response.data.message + '</p></div>').show();
+            url: ajaxurl, type: 'POST', timeout: 120000,
+            data: { action: 'wptocf_chunked_collect', nonce: chunkedNonce },
+            success: function(resp) {
+                if (!resp.success) { fail(resp.data ? resp.data.message : '收集URL失败'); return; }
+                var total = resp.data.total;
+                updateProgress($progressBar, $progressText, 5, '收集到 ' + total + ' 个页面，开始抓取...', elapsed());
+
+                var offset = 0;
+                function fetchBatch() {
+                    if (offset >= total) {
+                        updateProgress($progressBar, $progressText, 75, '页面抓取完成，正在处理资源并上传...', elapsed());
+                        $.ajax({
+                            url: ajaxurl, type: 'POST', timeout: 600000,
+                            data: { action: 'wptocf_chunked_deploy', nonce: chunkedNonce },
+                            success: function(resp3) {
+                                if (!resp3.success) { fail(resp3.data ? resp3.data.message : '部署失败'); return; }
+                                var e = elapsed();
+                                updateProgress($progressBar, $progressText, 100, '增量部署完成', e);
+                                setTimeout(function() {
+                                    $btn.removeClass('loading').prop('disabled', false);
+                                    $('#wptocf-export-btn, #wptocf-export-deploy-btn').prop('disabled', false);
+                                    $progressBar.css('background', 'linear-gradient(90deg, #2271b1, #72aee6)');
+                                    $progress.hide();
+                                    $result.html('<div class="wptocf-export-success" style="border-left-color:#00a32a;"><p><strong>增量部署成功！</strong> 用时 ' + e + ' 秒</p><p>' + resp3.data.message + '</p><p>部署ID: <code>' + resp3.data.deployment_id + '</code></p>' + (resp3.data.deployment_url ? '<p><a href="' + resp3.data.deployment_url + '" target="_blank" class="button button-primary" style="background:#00a32a;border-color:#00a32a;">访问部署站点</a></p>' : '') + '</div>').show();
+                                    refreshCacheStats();
+                                }, 500);
+                            },
+                            error: function(xhr, status) { fail('处理/部署阶段网络错误: ' + status); }
+                        });
+                        return;
+                    }
+
+                    var pct = 5 + Math.round((offset / total) * 70);
+                    updateProgress($progressBar, $progressText, pct, '正在抓取页面 ' + offset + '/' + total + '...', elapsed());
+
+                    $.ajax({
+                        url: ajaxurl, type: 'POST', timeout: 300000,
+                        data: { action: 'wptocf_chunked_fetch', nonce: chunkedNonce, offset: offset, limit: BATCH_SIZE },
+                        success: function(resp2) {
+                            if (!resp2.success) { fail(resp2.data ? resp2.data.message : '抓取页面失败'); return; }
+                            offset += BATCH_SIZE;
+                            fetchBatch();
+                        },
+                        error: function(xhr, status) { fail('抓取页面网络错误 (offset=' + offset + '): ' + status); }
+                    });
                 }
+                fetchBatch();
             },
-            error: function(xhr, status) {
-                clearInterval(progressInterval);
-                $btn.removeClass('loading').prop('disabled', false);
-                $('#wptocf-export-btn, #wptocf-export-deploy-btn').prop('disabled', false);
-                $progressBar.css('background', 'linear-gradient(90deg, #2271b1, #72aee6)');
-                $progress.hide();
-                $result.html('<div class="wptocf-export-error"><p><strong>增量部署失败</strong></p><p>网络错误: ' + status + '</p></div>').show();
-            }
+            error: function(xhr, status) { fail('收集URL网络错误: ' + status); }
         });
     });
 

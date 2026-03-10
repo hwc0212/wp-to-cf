@@ -1628,4 +1628,105 @@ class WP_to_CF_Settings_Page
             wp_send_json_error(['message' => __('删除失败', 'wp-to-cf')]);
         }
     }
+
+    // ========================================================================
+    // 分块部署 AJAX 处理器（解决共享主机超时问题）
+    // ========================================================================
+
+    /**
+     * AJAX: 第一步 - 收集 URL
+     */
+    public function ajax_chunked_collect(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_chunked_deploy')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $api = new WP_to_CF_Cloudflare_API();
+        if (!$api->is_configured()) {
+            wp_send_json_error(['message' => __('请先配置 Cloudflare API 凭证', 'wp-to-cf')]);
+            return;
+        }
+
+        @set_time_limit(120);
+        $exporter = new WP_to_CF_Site_Exporter();
+        $result = $exporter->chunked_collect_urls();
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error(['message' => $result['error'] ?? '收集 URL 失败']);
+        }
+    }
+
+    /**
+     * AJAX: 第二步 - 分批抓取页面
+     */
+    public function ajax_chunked_fetch(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_chunked_deploy')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
+        $limit = isset($_POST['limit']) ? intval($_POST['limit']) : 30;
+
+        @set_time_limit(300);
+        @ini_set('memory_limit', '512M');
+
+        $exporter = new WP_to_CF_Site_Exporter();
+        $result = $exporter->chunked_fetch_pages($offset, $limit);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error(['message' => $result['error'] ?? '抓取页面失败']);
+        }
+    }
+
+    /**
+     * AJAX: 第三步 - 处理资源并部署
+     */
+    public function ajax_chunked_deploy(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_chunked_deploy')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        @set_time_limit(0);
+        @ini_set('memory_limit', '1G');
+
+        $exporter = new WP_to_CF_Site_Exporter();
+        $result = $exporter->chunked_process_and_deploy();
+
+        if ($result['success']) {
+            $project_name = get_option('wptocf_project_name', '');
+            $production_domain = get_option('wptocf_production_domain', '');
+            $deployment_url = !empty($production_domain) ? 'https://' . $production_domain : "https://{$project_name}.pages.dev";
+
+            wp_send_json_success([
+                'message' => sprintf(__('部署成功！共 %d 个文件', 'wp-to-cf'), $result['file_count']),
+                'deployment_id' => $result['deployment_id'],
+                'deployment_url' => $deployment_url,
+                'file_count' => $result['file_count'],
+            ]);
+        } else {
+            wp_send_json_error(['message' => $result['error'] ?? '部署失败']);
+        }
+    }
 }

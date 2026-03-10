@@ -225,6 +225,11 @@ class WP_to_CF_Core
             add_action('wp_ajax_wptocf_incremental_deploy', [$settings_page, 'ajax_incremental_deploy']);
             add_action('wp_ajax_wptocf_staticize_all', [$settings_page, 'ajax_staticize_all']);
             
+            // 分块部署 AJAX（解决共享主机超时）
+            add_action('wp_ajax_wptocf_chunked_collect', [$settings_page, 'ajax_chunked_collect']);
+            add_action('wp_ajax_wptocf_chunked_fetch', [$settings_page, 'ajax_chunked_fetch']);
+            add_action('wp_ajax_wptocf_chunked_deploy', [$settings_page, 'ajax_chunked_deploy']);
+            
             // 包管理 AJAX
             add_action('wp_ajax_wptocf_get_packages', [$settings_page, 'ajax_get_packages']);
             add_action('wp_ajax_wptocf_delete_package', [$settings_page, 'ajax_delete_package']);

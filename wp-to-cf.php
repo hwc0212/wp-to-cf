@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WordPress to Cloudflare
  * Plugin URI: https://github.com/hwc0212/wp-to-cf
- * Description: 将 WordPress 网站转换为静态 HTML 并部署到 Cloudflare Pages，支持内网后端与公网静态前端分离
- * Version: 1.5.0
+ * Description: 将 WordPress 网站转换为静态 HTML 并部署到 Cloudflare Workers（静态资源），支持内网后端与公网静态前端分离
+ * Version: 1.6.0
  * Requires at least: 6.0
  * Requires PHP: 7.3
  * Author: huwencai.com
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // 插件版本
-define('WPTOCF_VERSION', '1.5.0');
+define('WPTOCF_VERSION', '1.6.0');
 
 // 插件路径
 define('WPTOCF_PLUGIN_DIR', plugin_dir_path(__FILE__));

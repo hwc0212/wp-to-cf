@@ -70,7 +70,16 @@ class WP_to_CF_Submission_Sync
     public function sync_all(): array
     {
         $results = ['synced' => 0, 'errors' => []];
-        
+
+        // 0. 从本站 Worker 后端拉取（新架构：D1 暂存 → WordPress 出站拉取）
+        if (get_option('wptocf_worker_backend_enabled', '0') === '1') {
+            $worker_result = $this->sync_worker();
+            $results['synced'] += $worker_result['synced'];
+            if (!empty($worker_result['error'])) {
+                $results['errors'][] = $worker_result['error'];
+            }
+        }
+
         // 1. 同步评论表单（从评论同步配置）
         $comment_result = $this->sync_comment_form();
         $results['synced'] += $comment_result['synced'];
@@ -178,6 +187,135 @@ class WP_to_CF_Submission_Sync
         return $result;
     }
     
+    /**
+     * 从本站 Worker 后端拉取提交（表单/评论）
+     *
+     * 流程：GET /__wptocf/pull（Bearer 密钥）→ 存入本地表 → POST /__wptocf/ack 回执
+     */
+    private function sync_worker(): array
+    {
+        $result = ['synced' => 0, 'error' => ''];
+
+        $base = $this->get_worker_base_url();
+        if (empty($base)) {
+            $result['error'] = 'Worker 拉取: 未设置 Worker 访问地址或生产域名';
+            return $result;
+        }
+
+        $secret = $this->get_pull_secret();
+        if (empty($secret)) {
+            $result['error'] = 'Worker 拉取: 未生成拉取密钥（请在 Worker 后端保存设置）';
+            return $result;
+        }
+
+        $response = wp_remote_get($base . '/__wptocf/pull?limit=100', [
+            'timeout' => 30,
+            'headers' => ['Authorization' => 'Bearer ' . $secret],
+        ]);
+
+        if (is_wp_error($response)) {
+            $result['error'] = 'Worker 拉取失败: ' . $response->get_error_message();
+            return $result;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code !== 200) {
+            $result['error'] = "Worker 拉取失败: HTTP {$code}";
+            WP_to_CF_Logger::error('Worker pull error', ['code' => $code, 'body' => wp_remote_retrieve_body($response)]);
+            return $result;
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        $items = $body['items'] ?? [];
+        $ack_ids = [];
+
+        foreach ($items as $item) {
+            $external_id = $item['id'] ?? '';
+            if (empty($external_id)) {
+                continue;
+            }
+            // 无论是否已存在，都回执以推进 Worker 侧游标
+            $ack_ids[] = $external_id;
+
+            if ($this->is_synced($external_id)) {
+                continue;
+            }
+
+            $data = is_array($item['data'] ?? null) ? $item['data'] : [];
+            // 附带 Worker 侧邮件发送状态，便于失败后人工补救
+            if (!empty($item['email'])) {
+                $data['_wptocf_email'] = $item['email'];
+            }
+
+            $type = ($item['type'] ?? 'form') === 'comment' ? 'comment' : 'form';
+            $post_id = intval($item['post_id'] ?? 0);
+            if (!$post_id) {
+                $post_id = $this->extract_post_id($data);
+            }
+
+            // ISO8601 → MySQL datetime
+            $created = $item['created_at'] ?? '';
+            $ts = $created ? strtotime($created) : false;
+            $created_at = $ts ? gmdate('Y-m-d H:i:s', $ts) : current_time('mysql');
+
+            $this->save_submission([
+                'external_id' => $external_id,
+                'form_id' => $item['form_id'] ?? 'default',
+                'submission_type' => $type,
+                'post_id' => $post_id,
+                'data' => $data,
+                'created_at' => $created_at,
+            ]);
+
+            $result['synced']++;
+        }
+
+        // 回执，标记 Worker 侧已消费
+        if (!empty($ack_ids)) {
+            $ack = wp_remote_post($base . '/__wptocf/ack', [
+                'timeout' => 30,
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $secret,
+                    'Content-Type' => 'application/json',
+                ],
+                'body' => json_encode(['ids' => $ack_ids]),
+            ]);
+            if (is_wp_error($ack)) {
+                WP_to_CF_Logger::warning('Worker ack failed', ['error' => $ack->get_error_message()]);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * 获取 Worker 访问基础 URL（优先显式设置，否则回退生产域名）
+     */
+    private function get_worker_base_url(): string
+    {
+        $base = trim((string) get_option('wptocf_worker_base_url', ''));
+        if (empty($base)) {
+            $domain = trim((string) get_option('wptocf_production_domain', ''));
+            if (!empty($domain)) {
+                $base = 'https://' . preg_replace('#^https?://#', '', $domain);
+            }
+        }
+        return rtrim($base, '/');
+    }
+
+    /**
+     * 获取解密后的拉取密钥
+     */
+    private function get_pull_secret(): string
+    {
+        $encrypted = get_option('wptocf_worker_pull_secret', '');
+        if (empty($encrypted)) {
+            return '';
+        }
+        $decrypted = WP_to_CF_Crypto::decrypt($encrypted);
+        return $decrypted !== false ? $decrypted : '';
+    }
+
     /**
      * 同步 Getform/Forminit 表单
      * 
@@ -589,9 +727,11 @@ class WP_to_CF_Submission_Sync
         $mapping = $form_admin->get_mapping($submission['form_id']);
         
         // 表单提交才发送邮件通知（评论不发邮件）
+        // 注意：启用 Worker 后端时，通知邮件已由 Worker 在边缘发送，WordPress 不再重复发送
+        $worker_backend = get_option('wptocf_worker_backend_enabled', '0') === '1';
         $notify_email = get_option('wptocf_form_notify_email', get_option('admin_email'));
-        
-        if ($notify_email) {
+
+        if ($notify_email && !$worker_backend) {
             $this->send_form_notification($notify_email, $submission, $data, $mapping);
         }
         

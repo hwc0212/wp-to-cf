@@ -13,9 +13,9 @@ if (!defined('ABSPATH')) exit;
     <div class="wptocf-panel blue">
         <h2>
             <span class="dashicons dashicons-cloud"></span>
-            <?php esc_html_e('Cloudflare Pages 配置', 'wp-to-cf'); ?>
+            <?php esc_html_e('Cloudflare Workers 配置', 'wp-to-cf'); ?>
         </h2>
-        <p><?php esc_html_e('配置 Cloudflare Pages 连接信息，用于自动上传功能。如果只使用 ZIP 下载手动上传，可跳过此配置。', 'wp-to-cf'); ?></p>
+        <p><?php esc_html_e('配置 Cloudflare Workers 连接信息，用于自动上传功能（使用 Workers 静态资源部署，替代已弃用的 Pages）。如果只使用 ZIP 下载手动上传，可跳过此配置。', 'wp-to-cf'); ?></p>
         
         <table class="form-table">
             <tr>
@@ -44,14 +44,14 @@ if (!defined('ABSPATH')) exit;
                     </button>
                     <span id="wptocf-validate-status" style="margin-left: 10px;"></span>
                     <p class="description">
-                        <?php echo $has_token ? esc_html__('API Token 已加密保存。留空保持不变，输入新值将覆盖。', 'wp-to-cf') : esc_html__('Cloudflare API Token，需要 Pages 编辑权限。', 'wp-to-cf'); ?>
+                        <?php echo $has_token ? esc_html__('API Token 已加密保存。留空保持不变，输入新值将覆盖。', 'wp-to-cf') : esc_html__('Cloudflare API Token，需要 Workers 脚本编辑权限。', 'wp-to-cf'); ?>
                         <a href="javascript:void(0);" class="wptocf-toggle-guide" data-target="wptocf-api-guide"><?php esc_html_e('如何获取？', 'wp-to-cf'); ?></a>
                     </p>
                     <div id="wptocf-api-guide" class="wptocf-guide-panel" style="display: none; background: #f0f6fc; border: 1px solid #c3c4c7; border-left: 4px solid #2271b1; padding: 12px 15px; margin: 10px 0 0 0; max-width: 600px;">
                         <ol style="margin: 0; padding-left: 20px;">
                             <li><?php esc_html_e('登录 Cloudflare 控制台', 'wp-to-cf'); ?> → <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank"><?php esc_html_e('我的个人资料 → API 令牌', 'wp-to-cf'); ?></a></li>
                             <li><?php esc_html_e('点击「创建令牌」→「创建自定义令牌」', 'wp-to-cf'); ?></li>
-                            <li><?php esc_html_e('权限设置：', 'wp-to-cf'); ?><strong><?php esc_html_e('帐户 → Cloudflare Pages → 编辑', 'wp-to-cf'); ?></strong></li>
+                            <li><?php esc_html_e('权限设置：', 'wp-to-cf'); ?><strong><?php esc_html_e('帐户 → Workers 脚本 → 编辑', 'wp-to-cf'); ?></strong></li>
                             <li><?php esc_html_e('账户资源：包括 → 所有帐户（或选择特定账户）', 'wp-to-cf'); ?></li>
                             <li><?php esc_html_e('点击「继续以显示摘要」→「创建令牌」→ 复制令牌', 'wp-to-cf'); ?></li>
                         </ol>
@@ -59,7 +59,7 @@ if (!defined('ABSPATH')) exit;
                 </td>
             </tr>
             <tr>
-                <th><label for="wptocf_project_name"><?php esc_html_e('Project Name', 'wp-to-cf'); ?></label></th>
+                <th><label for="wptocf_project_name"><?php esc_html_e('Worker 名称', 'wp-to-cf'); ?></label></th>
                 <td>
                     <div class="wptocf-combobox" id="wptocf-project-combobox">
                         <input type="text" name="wptocf_project_name" id="wptocf_project_name" 
@@ -68,7 +68,7 @@ if (!defined('ABSPATH')) exit;
                         <span class="wptocf-combobox-arrow">▼</span>
                         <ul class="wptocf-combobox-dropdown" id="wptocf_project_dropdown"></ul>
                     </div>
-                    <p class="description"><?php esc_html_e('Cloudflare Pages 项目名称。验证凭证后可从下拉列表选择已有项目，或输入新名称自动创建。', 'wp-to-cf'); ?></p>
+                    <p class="description"><?php esc_html_e('Cloudflare Worker 脚本名称（只能包含小写字母、数字和连字符）。验证凭证后可从下拉列表选择已有 Worker，或输入新名称（首次部署时自动创建）。', 'wp-to-cf'); ?></p>
                 </td>
             </tr>
             <tr>
@@ -84,8 +84,8 @@ if (!defined('ABSPATH')) exit;
                     <div id="wptocf-domain-guide" class="wptocf-guide-panel" style="display: none; background: #fff8e5; border: 1px solid #c3c4c7; border-left: 4px solid #dba617; padding: 12px 15px; margin: 10px 0 0 0; max-width: 600px;">
                         <p style="margin: 0 0 8px 0; font-weight: bold;"><?php esc_html_e('首次部署后在 Cloudflare 控制台绑定域名：', 'wp-to-cf'); ?></p>
                         <ol style="margin: 0; padding-left: 20px;">
-                            <li><?php esc_html_e('进入 Workers 和 Pages → 选择您的项目', 'wp-to-cf'); ?></li>
-                            <li><?php esc_html_e('点击「自定义域」→「设置自定义域」', 'wp-to-cf'); ?></li>
+                            <li><?php esc_html_e('进入 Workers 和 Pages → 选择您的 Worker', 'wp-to-cf'); ?></li>
+                            <li><?php esc_html_e('点击「设置」→「域和路由」→「添加」→「自定义域」', 'wp-to-cf'); ?></li>
                             <li><?php esc_html_e('输入域名（如 example.com 或 www.example.com）', 'wp-to-cf'); ?></li>
                             <li><?php esc_html_e('域名在 Cloudflare 则自动配置 DNS，否则按提示添加 CNAME 记录', 'wp-to-cf'); ?></li>
                         </ol>

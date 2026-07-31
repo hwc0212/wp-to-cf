@@ -24,6 +24,7 @@ $tabs = [
     'cloudflare' => __('Cloudflare 配置', 'wp-to-cf'),
     'export' => __('导出与部署', 'wp-to-cf'),
     'forms' => __('表单配置', 'wp-to-cf'),
+    'backend' => __('Worker 后端', 'wp-to-cf'),
     'sync' => __('评论同步', 'wp-to-cf'),
     'submissions' => __('表单提交', 'wp-to-cf'),
     'advanced' => __('高级设置', 'wp-to-cf'),
@@ -56,6 +57,9 @@ $tabs = [
                 break;
             case 'forms':
                 include __DIR__ . '/tab-forms.php';
+                break;
+            case 'backend':
+                include __DIR__ . '/tab-backend.php';
                 break;
             case 'sync':
                 include __DIR__ . '/tab-sync.php';

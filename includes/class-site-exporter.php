@@ -124,6 +124,7 @@ class WP_to_CF_Site_Exporter
             // 合并所有新生成的文件
             $new_files = array_merge($html_files, $asset_files, $sitemap_files);
             $new_files['robots.txt'] = $robots_content;
+            $new_files = array_merge($new_files, $this->get_runtime_asset_files());
             
             // 更新缓存（只更新变化的文件）
             $update_result = $cache->update_files($new_files);
@@ -218,6 +219,7 @@ class WP_to_CF_Site_Exporter
             // 合并所有新生成的文件
             $new_files = array_merge($html_files, $asset_files, $sitemap_files);
             $new_files['robots.txt'] = $robots_content;
+            $new_files = array_merge($new_files, $this->get_runtime_asset_files());
             
             // 更新缓存
             $update_result = $cache->update_files($new_files);
@@ -311,6 +313,7 @@ class WP_to_CF_Site_Exporter
             // 合并所有新生成的文件
             $new_files = array_merge($html_files, $asset_files, $sitemap_files);
             $new_files['robots.txt'] = $robots_content;
+            $new_files = array_merge($new_files, $this->get_runtime_asset_files());
             
             // 过滤出变化的文件
             $filter_result = $cache->filter_changed_files($new_files);
@@ -2131,6 +2134,27 @@ class WP_to_CF_Site_Exporter
     }
     
     /**
+     * 获取需要随部署一起上传的运行时资源文件
+     *
+     * 目前包含 form-bridge.js（前端表单/评论提交桥接脚本）。
+     * 用于自动部署路径（ZIP 下载走单独的 add_form_handler_files）。
+     *
+     * @return array [相对路径 => 文件内容]
+     */
+    private function get_runtime_asset_files(): array
+    {
+        $files = [];
+        $bridge_path = dirname(__DIR__) . '/assets/js/form-bridge.js';
+        if (file_exists($bridge_path)) {
+            $content = file_get_contents($bridge_path);
+            if ($content !== false) {
+                $files['assets/js/form-bridge.js'] = $content;
+            }
+        }
+        return $files;
+    }
+
+    /**
      * 注入表单处理脚本到 HTML
      */
     private function inject_form_bridge_script($html)
@@ -2178,13 +2202,27 @@ class WP_to_CF_Site_Exporter
             }
         }
         
-        if (empty($forms_config)) {
+        // Worker 后端配置：启用后 form-bridge 会把所有未单独映射的表单
+        // 提交到本站 Worker 的 /__wptocf/submit（评论走 /__wptocf/comment）
+        $worker_enabled = get_option('wptocf_worker_backend_enabled', '0') === '1';
+        $worker_config = [
+            'enabled' => $worker_enabled,
+        ];
+        if ($worker_enabled) {
+            $worker_config['submit'] = '/__wptocf/submit';
+            $worker_config['comment'] = '/__wptocf/comment';
+            $worker_config['turnstile_site_key'] = get_option('wptocf_turnstile_site_key', '');
+        }
+
+        // 若既无表单映射，也未启用 Worker 后端，则无需注入
+        if (empty($forms_config) && !$worker_enabled) {
             return $html;
         }
         
         // 生成配置脚本
         $config_script = '<script>window.__WPTOCF_FORM_CONFIG__ = ' . json_encode([
             'forms' => $forms_config,
+            'worker' => $worker_config,
         ], JSON_UNESCAPED_UNICODE) . ';</script>';
         
         // 添加 form-bridge.js 引用
@@ -2701,6 +2739,7 @@ class WP_to_CF_Site_Exporter
         // 合并所有文件
         $new_files = array_merge($html_files, $asset_files, $sitemap_files);
         $new_files['robots.txt'] = $robots_content;
+        $new_files = array_merge($new_files, $this->get_runtime_asset_files());
         
         // 更新缓存
         $update_result = $cache->update_files($new_files);

@@ -30,10 +30,23 @@
         var form = event.target;
         if (form.tagName !== 'FORM') return;
 
-        var formId = getFormId(form);
-        if (!formId) return;
+        var formId = getFormId(form) || 'default';
 
+        var isCommentForm = form.id === 'commentform' || form.classList.contains('comment-form');
         var formConfig = CONFIG.forms[formId];
+
+        // 无单独映射时，若启用了 Worker 后端，则路由到本站 Worker
+        if ((!formConfig || !formConfig.endpoint) && CONFIG.worker && CONFIG.worker.enabled) {
+            formConfig = {
+                service_type: 'worker',
+                endpoint: isCommentForm ? CONFIG.worker.comment : CONFIG.worker.submit,
+                redirect_url: '',
+                success_message: isCommentForm
+                    ? '评论已提交，审核通过后将显示。'
+                    : '提交成功！',
+            };
+        }
+
         if (!formConfig || !formConfig.endpoint) return;
 
         event.preventDefault();
@@ -89,8 +102,21 @@
         var formData = new FormData(form);
         var serviceType = config.service_type || 'formspree';
         var isCommentForm = form.id === 'commentform' || form.classList.contains('comment-form');
-        var formId = getFormId(form);
-        
+        var formId = getFormId(form) || 'default';
+
+        // ========== Worker 后端 ==========
+        if (serviceType === 'worker') {
+            // 附带表单标识，供 Worker 记录归类
+            if (!formData.has('form_id')) {
+                formData.append('form_id', formId);
+            }
+            // WordPress 评论表单的 comment_post_ID → post_id
+            var commentPostId = formData.get('comment_post_ID');
+            if (commentPostId && !formData.has('post_id')) {
+                formData.append('post_id', commentPostId);
+            }
+        }
+
         // ========== 安全字段 (CF Form Service) ==========
         if (serviceType === 'cfform') {
             // 添加表单加载时间戳（防机器人）

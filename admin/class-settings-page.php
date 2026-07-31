@@ -68,7 +68,7 @@ class WP_to_CF_Settings_Page
         // Cloudflare 配置部分
         add_settings_section(
             'wptocf_cloudflare_section',
-            __('Cloudflare Pages 配置', 'wp-to-cf'),
+            __('Cloudflare Workers 配置', 'wp-to-cf'),
             [$this, 'render_cloudflare_section'],
             self::PAGE_SLUG
         );
@@ -554,7 +554,7 @@ class WP_to_CF_Settings_Page
     public function render_cloudflare_section(): void
     {
         ?>
-        <p><?php esc_html_e('配置 Cloudflare Pages 连接信息，用于自动上传功能。如果只使用 ZIP 下载手动上传，可跳过此配置。', 'wp-to-cf'); ?></p>
+        <p><?php esc_html_e('配置 Cloudflare Workers 连接信息，用于自动上传功能（使用 Workers 静态资源部署，替代已弃用的 Pages）。如果只使用 ZIP 下载手动上传，可跳过此配置。', 'wp-to-cf'); ?></p>
         <?php
     }
 
@@ -618,7 +618,7 @@ class WP_to_CF_Settings_Page
             if ($has_token) {
                 esc_html_e('API Token 已加密保存。留空保持不变，输入新值将覆盖。', 'wp-to-cf');
             } else {
-                esc_html_e('Cloudflare API Token，需要 Pages 编辑权限。', 'wp-to-cf');
+                esc_html_e('Cloudflare API Token，需要 Workers 脚本编辑权限。', 'wp-to-cf');
             }
             ?>
             <a href="javascript:void(0);" class="wptocf-toggle-guide" data-target="wptocf-api-guide"><?php esc_html_e('如何获取？', 'wp-to-cf'); ?></a>
@@ -627,7 +627,7 @@ class WP_to_CF_Settings_Page
             <ol style="margin: 0; padding-left: 20px;">
                 <li><?php esc_html_e('登录 Cloudflare 控制台', 'wp-to-cf'); ?> → <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank"><?php esc_html_e('我的个人资料 → API 令牌', 'wp-to-cf'); ?></a></li>
                 <li><?php esc_html_e('点击「创建令牌」→「创建自定义令牌」', 'wp-to-cf'); ?></li>
-                <li><?php esc_html_e('权限设置：', 'wp-to-cf'); ?><strong><?php esc_html_e('帐户 → Cloudflare Pages → 编辑', 'wp-to-cf'); ?></strong></li>
+                <li><?php esc_html_e('权限设置：', 'wp-to-cf'); ?><strong><?php esc_html_e('帐户 → Workers 脚本 → 编辑', 'wp-to-cf'); ?></strong></li>
                 <li><?php esc_html_e('账户资源：包括 → 所有帐户（或选择特定账户）', 'wp-to-cf'); ?></li>
                 <li><?php esc_html_e('点击「继续以显示摘要」→「创建令牌」→ 复制令牌', 'wp-to-cf'); ?></li>
             </ol>
@@ -660,7 +660,7 @@ class WP_to_CF_Settings_Page
             <ul class="wptocf-combobox-dropdown" id="wptocf_project_dropdown"></ul>
         </div>
         <p class="description">
-            <?php esc_html_e('Cloudflare Pages 项目名称。验证凭证后可从下拉列表选择已有项目，或输入新名称自动创建。', 'wp-to-cf'); ?>
+            <?php esc_html_e('Cloudflare Worker 脚本名称（只能包含小写字母、数字和连字符）。验证凭证后可从下拉列表选择已有 Worker，或输入新名称（首次部署时自动创建）。', 'wp-to-cf'); ?>
         </p>
         <?php
     }
@@ -687,8 +687,8 @@ class WP_to_CF_Settings_Page
         <div id="wptocf-domain-guide" class="wptocf-guide-panel" style="display: none; background: #fff8e5; border: 1px solid #c3c4c7; border-left: 4px solid #dba617; padding: 12px 15px; margin: 10px 0 0 0; max-width: 600px;">
             <p style="margin: 0 0 8px 0; font-weight: bold;"><?php esc_html_e('首次部署后在 Cloudflare 控制台绑定域名：', 'wp-to-cf'); ?></p>
             <ol style="margin: 0; padding-left: 20px;">
-                <li><?php esc_html_e('进入 Workers 和 Pages → 选择您的项目', 'wp-to-cf'); ?></li>
-                <li><?php esc_html_e('点击「自定义域」→「设置自定义域」', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('进入 Workers 和 Pages → 选择您的 Worker', 'wp-to-cf'); ?></li>
+                <li><?php esc_html_e('点击「设置」→「域和路由」→「添加」→「自定义域」', 'wp-to-cf'); ?></li>
                 <li><?php esc_html_e('输入域名（如 example.com 或 www.example.com）', 'wp-to-cf'); ?></li>
                 <li><?php esc_html_e('域名在 Cloudflare 则自动配置 DNS，否则按提示添加 CNAME 记录', 'wp-to-cf'); ?></li>
             </ol>
@@ -1381,6 +1381,183 @@ class WP_to_CF_Settings_Page
         } else {
             wp_send_json_error(['message' => $result['message']]);
         }
+    }
+
+    /**
+     * 读取已保存的 Cloudflare 凭证（Account ID + 解密后的 Token）
+     *
+     * @return array{account_id:string, api_token:string}
+     */
+    private function get_saved_cf_credentials(): array
+    {
+        $account_id = get_option('wptocf_account_id', '');
+        $encrypted = get_option('wptocf_api_token', '');
+        $token = '';
+        if (!empty($encrypted)) {
+            $decrypted = WP_to_CF_Crypto::decrypt($encrypted);
+            $token = $decrypted !== false ? $decrypted : '';
+        }
+        return ['account_id' => $account_id, 'api_token' => $token];
+    }
+
+    /**
+     * AJAX：获取 D1 数据库列表
+     */
+    public function ajax_list_d1(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_backend')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $creds = $this->get_saved_cf_credentials();
+        if (empty($creds['account_id']) || empty($creds['api_token'])) {
+            wp_send_json_error(['message' => __('请先在「Cloudflare 配置」中填写并保存 Account ID 与 API Token', 'wp-to-cf')]);
+            return;
+        }
+
+        $result = WP_to_CF_Cloudflare_API::list_d1_databases($creds['account_id'], $creds['api_token']);
+        if (!$result['success']) {
+            wp_send_json_error(['message' => $result['message'] ?? __('获取失败', 'wp-to-cf')]);
+            return;
+        }
+        wp_send_json_success(['databases' => $result['databases']]);
+    }
+
+    /**
+     * AJAX：创建 D1 数据库并初始化表结构
+     */
+    public function ajax_create_d1(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_backend')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $name = sanitize_text_field($_POST['name'] ?? '');
+        if (empty($name)) {
+            wp_send_json_error(['message' => __('请输入数据库名称', 'wp-to-cf')]);
+            return;
+        }
+
+        $creds = $this->get_saved_cf_credentials();
+        if (empty($creds['account_id']) || empty($creds['api_token'])) {
+            wp_send_json_error(['message' => __('请先配置 Cloudflare 凭证', 'wp-to-cf')]);
+            return;
+        }
+
+        $result = WP_to_CF_Cloudflare_API::create_d1_database($creds['account_id'], $creds['api_token'], $name);
+        if (!$result['success']) {
+            wp_send_json_error(['message' => $result['message'] ?? __('创建失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $db = $result['database'];
+        $db_id = $db['uuid'] ?? '';
+
+        // 初始化表结构
+        $schema = WP_to_CF_Cloudflare_API::provision_d1_schema($creds['account_id'], $creds['api_token'], $db_id);
+
+        wp_send_json_success([
+            'database' => ['uuid' => $db_id, 'name' => $db['name'] ?? $name],
+            'schema' => $schema,
+        ]);
+    }
+
+    /**
+     * AJAX：为已选 D1 数据库初始化表结构
+     */
+    public function ajax_provision_d1(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_backend')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $db_id = sanitize_text_field($_POST['database_id'] ?? '');
+        if (empty($db_id)) {
+            wp_send_json_error(['message' => __('请先选择 D1 数据库', 'wp-to-cf')]);
+            return;
+        }
+
+        $creds = $this->get_saved_cf_credentials();
+        if (empty($creds['account_id']) || empty($creds['api_token'])) {
+            wp_send_json_error(['message' => __('请先配置 Cloudflare 凭证', 'wp-to-cf')]);
+            return;
+        }
+
+        $schema = WP_to_CF_Cloudflare_API::provision_d1_schema($creds['account_id'], $creds['api_token'], $db_id);
+        if (!$schema['success']) {
+            wp_send_json_error(['message' => $schema['message'] ?? __('初始化失败', 'wp-to-cf')]);
+            return;
+        }
+        wp_send_json_success(['message' => $schema['message']]);
+    }
+
+    /**
+     * AJAX：测试 Worker 后端可用性（调用 /__wptocf/health）
+     */
+    public function ajax_test_backend(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('您没有权限执行此操作', 'wp-to-cf')]);
+            return;
+        }
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'wptocf_backend')) {
+            wp_send_json_error(['message' => __('安全验证失败', 'wp-to-cf')]);
+            return;
+        }
+
+        $base = $this->get_worker_base_url();
+        if (empty($base)) {
+            wp_send_json_error(['message' => __('请先设置 Worker 访问地址或生产域名', 'wp-to-cf')]);
+            return;
+        }
+
+        $response = wp_remote_get(rtrim($base, '/') . '/__wptocf/health', ['timeout' => 15]);
+        if (is_wp_error($response)) {
+            wp_send_json_error(['message' => __('连接失败: ', 'wp-to-cf') . $response->get_error_message()]);
+            return;
+        }
+        $code = wp_remote_retrieve_response_code($response);
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+        if ($code === 200 && ($data['ok'] ?? false)) {
+            wp_send_json_success([
+                'message' => __('Worker 后端正常', 'wp-to-cf'),
+                'has_db' => $data['hasDb'] ?? false,
+            ]);
+            return;
+        }
+        wp_send_json_error(['message' => sprintf(__('响应异常 (HTTP %d)，请确认已部署最新 Worker', 'wp-to-cf'), $code)]);
+    }
+
+    /**
+     * 获取 Worker 访问基础 URL（用于 WordPress 出站拉取）
+     *
+     * 优先使用显式设置的 Worker 地址，否则回退到生产域名。
+     */
+    private function get_worker_base_url(): string
+    {
+        $base = trim((string) get_option('wptocf_worker_base_url', ''));
+        if (empty($base)) {
+            $domain = trim((string) get_option('wptocf_production_domain', ''));
+            if (!empty($domain)) {
+                $base = 'https://' . preg_replace('#^https?://#', '', $domain);
+            }
+        }
+        return rtrim($base, '/');
     }
 
     /**

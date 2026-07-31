@@ -242,6 +242,12 @@ class WP_to_CF_Core
             // Cloudflare 配置 AJAX
             add_action('wp_ajax_wptocf_validate_credentials', [$settings_page, 'ajax_validate_cf_credentials']);
             add_action('wp_ajax_wptocf_create_project', [$settings_page, 'ajax_create_pages_project']);
+
+            // Worker 后端配置 AJAX
+            add_action('wp_ajax_wptocf_list_d1', [$settings_page, 'ajax_list_d1']);
+            add_action('wp_ajax_wptocf_create_d1', [$settings_page, 'ajax_create_d1']);
+            add_action('wp_ajax_wptocf_provision_d1', [$settings_page, 'ajax_provision_d1']);
+            add_action('wp_ajax_wptocf_test_backend', [$settings_page, 'ajax_test_backend']);
             
             // 表单配置 AJAX
             add_action('wp_ajax_wptocf_scan_forms', [$settings_page, 'ajax_scan_forms']);

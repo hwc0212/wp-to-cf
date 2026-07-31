@@ -16,6 +16,10 @@ $default_rules = $settings_page->get_default_cleanup_rules();
     <div class="wptocf-panel blue">
         <h2><span class="dashicons dashicons-editor-code"></span> <?php esc_html_e('代码注入配置', 'wp-to-cf'); ?></h2>
         <p><?php esc_html_e('在生成的静态 HTML 中注入自定义代码，例如 Google Analytics、Facebook Pixel 等。', 'wp-to-cf'); ?></p>
+        <div class="wptocf-warning-box">
+            <span class="dashicons dashicons-warning" style="color:#dba617;"></span>
+            <?php esc_html_e('注意：如果你已在 SEO 插件（如 GML AI SEO）中配置了 Google Analytics / GTM，其代码会在抓取时被自动带入静态页。请勿在此重复填写相同的统计代码，否则会造成重复加载与重复统计。', 'wp-to-cf'); ?>
+        </div>
         
         <table class="form-table">
             <tr>

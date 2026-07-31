@@ -292,6 +292,12 @@ A: 插件已内置重试机制（最多 3 次）。如持续失败，检查 API 
 
 ## 📝 更新日志
 
+### v1.6.1 (2026-07-31)
+- 🌐 **多语言导出加固**:`/{lang}/` URL 展开尊重语言的 `enabled` 开关、跳过源语言冗余副本、防止重复前缀
+- 🌐 **hreflang 绝对化**:将 `<link rel="alternate" hreflang>` 重写为生产域名绝对 URL(Google 要求 hreflang 为绝对地址),改善与 GML AI SEO 翻译模块的多语言 SEO 协同
+- 🔧 **Worker SMTP 客户端重构**:修复 STARTTLS 升级后读写器/连接释放的问题,单函数流程更稳健(587 STARTTLS / 465 TLS)
+- ⚠️ 代码注入面板新增"避免与 SEO 插件重复配置统计代码"的提示
+
 ### v1.6.0 (2026-07-30)
 - 🚀 **从 Cloudflare Pages 迁移到 Cloudflare Workers 静态资源**
   - 采用 Workers Direct Upload 流程（manifest → 分批上传 → 部署脚本）

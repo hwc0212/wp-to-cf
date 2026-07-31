@@ -630,33 +630,45 @@ class WP_to_CF_Site_Exporter
         // add those URLs to the crawl list.
         $gml_languages = get_option('gml_languages', []);
         if (!empty($gml_languages) && get_option('gml_translation_enabled', false)) {
+            // 源语言页面保持在根路径，不加前缀
+            $source_lang = get_option('gml_source_lang', 'en');
             $source_urls = $urls; // snapshot before expansion
+            $added_langs = [];
+
             foreach ($gml_languages as $lang) {
                 $lang_code = $lang['code'] ?? '';
                 if (empty($lang_code)) continue;
+                // 跳过与源语言相同的语言（避免生成 /en/ 冗余副本）
+                if ($lang_code === $source_lang) continue;
+                // 跳过被显式禁用的语言（与翻译模块的 enabled ?? true 语义一致）
+                if (array_key_exists('enabled', $lang) && !$lang['enabled']) continue;
+
+                $added_langs[] = $lang_code;
 
                 foreach ($source_urls as $source_url => $file_path) {
                     // Build the language-prefixed URL:
                     // https://site.com/about/ → https://site.com/ru/about/
-                    $parsed   = parse_url($source_url);
-                    $path     = isset($parsed['path']) ? ltrim($parsed['path'], '/') : '';
+                    $parsed = parse_url($source_url);
+                    $path   = isset($parsed['path']) ? ltrim($parsed['path'], '/') : '';
+
+                    // 防御：源 URL 已带该语言前缀时跳过，避免 /ru/ru/...
+                    if (preg_match('#^([a-z]{2})(/|$)#i', $path, $pm) && strtolower($pm[1]) === strtolower($lang_code)) {
+                        continue;
+                    }
+
                     $lang_url = rtrim($this->site_url, '/') . '/' . $lang_code . '/' . $path;
 
                     // Build the output file path:
                     // about/index.html → ru/about/index.html
-                    if ($file_path === 'index.html') {
-                        $lang_file = $lang_code . '/index.html';
-                    } else {
-                        $lang_file = $lang_code . '/' . $file_path;
-                    }
+                    $lang_file = $lang_code . '/' . ($file_path === 'index.html' ? 'index.html' : $file_path);
 
                     $urls[$lang_url] = $lang_file;
                 }
             }
 
-            if (!empty($gml_languages)) {
+            if (!empty($added_langs)) {
                 WP_to_CF_Logger::info('GML Translate: added language URL variants', [
-                    'languages' => array_column($gml_languages, 'code'),
+                    'languages' => $added_langs,
                     'total_urls' => count($urls),
                 ]);
             }
@@ -2055,6 +2067,25 @@ class WP_to_CF_Site_Exporter
                         }
                     }
                     return '<meta' . $attrs . '>';
+                },
+                $html
+            );
+
+            // 重写多语言 hreflang: <link rel="alternate" hreflang="..." href="...">
+            // Google 要求 hreflang 使用绝对 URL；process_html 已把内网绝对链接转成
+            // 相对路径，这里统一补回生产域名，保证多语言 SEO 信号有效。
+            $html = preg_replace_callback(
+                '#<link([^>]*rel=["\']alternate["\'][^>]*hreflang=["\'][^"\']*["\'][^>]*)>#i',
+                function($m) use ($production_url) {
+                    $attrs = $m[1];
+                    if (preg_match('/href=["\']([^"\']*)["\']/', $attrs, $href_match)) {
+                        $old_href = $href_match[1];
+                        if (strpos($old_href, 'http') !== 0) {
+                            $new_href = $production_url . '/' . ltrim($old_href, '/');
+                            $attrs = str_replace($href_match[0], 'href="' . $new_href . '"', $attrs);
+                        }
+                    }
+                    return '<link' . $attrs . '>';
                 },
                 $html
             );

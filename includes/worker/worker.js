@@ -468,13 +468,13 @@ async function sendViaSMTP(env, mail) {
     implicitTls ? { secureTransport: "on" } : { secureTransport: "starttls" }
   );
 
-  const writer = socket.writable.getWriter();
-  const reader = socket.readable.getReader();
   const enc = new TextEncoder();
   const dec = new TextDecoder();
+  let writer = socket.writable.getWriter();
+  let reader = socket.readable.getReader();
 
   async function readReply() {
-    // 读取直到出现 "NNN " 结束行
+    // 读取直到出现终止行 "NNN "（多行响应中间行为 "NNN-"）
     let buf = "";
     while (true) {
       const { value, done } = await reader.read();
@@ -484,8 +484,10 @@ async function sendViaSMTP(env, mail) {
       const last = lines[lines.length - 1] || "";
       if (/^\d{3} /.test(last)) break;
     }
-    const code = parseInt(buf.slice(0, 3), 10);
-    return { code, text: buf };
+    // 取最后一个状态行的返回码
+    const statusLines = buf.split(/\r?\n/).filter((l) => /^\d{3}/.test(l));
+    const finalLine = statusLines.length ? statusLines[statusLines.length - 1] : buf;
+    return { code: parseInt(finalLine.slice(0, 3), 10), text: buf };
   }
   async function cmd(line, okCodes) {
     if (line !== null) await writer.write(enc.encode(line + "\r\n"));
@@ -498,79 +500,47 @@ async function sendViaSMTP(env, mail) {
 
   try {
     await cmd(null, [220]); // greeting
-    await cmd(`EHLO wp-to-cf`, [250]);
+    await cmd("EHLO wp-to-cf", [250]);
 
+    // STARTTLS：升级连接后需重新获取读写器并重新 EHLO
     if (!implicitTls) {
-      await cmd(`STARTTLS`, [220]);
-      socket = socket.startTls();
-      // 重新获取读写器
+      await cmd("STARTTLS", [220]);
       reader.releaseLock();
       writer.releaseLock();
-      const w2 = socket.writable.getWriter();
-      const r2 = socket.readable.getReader();
-      // 用新读写器重定义闭包引用
-      return await smtpAfterTls(socket, w2, r2, enc, dec, { user, pass, mail });
+      socket = socket.startTls();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
+      await cmd("EHLO wp-to-cf", [250]);
     }
 
-    return await smtpConversation({ cmd, writer, enc }, { user, pass, mail });
+    if (user && pass) {
+      await cmd("AUTH LOGIN", [334]);
+      await cmd(btoa(user), [334]);
+      await cmd(btoa(pass), [235]);
+    }
+
+    await cmd(`MAIL FROM:<${extractAddr(mail.from)}>`, [250]);
+    for (const rcpt of splitAddrs(mail.to)) {
+      await cmd(`RCPT TO:<${extractAddr(rcpt)}>`, [250, 251]);
+    }
+    await cmd("DATA", [354]);
+
+    const headers =
+      `From: ${mail.from}\r\n` +
+      `To: ${mail.to}\r\n` +
+      `Subject: ${encodeHeader(mail.subject)}\r\n` +
+      `MIME-Version: 1.0\r\n` +
+      `Content-Type: text/plain; charset=UTF-8\r\n` +
+      `Content-Transfer-Encoding: 8bit\r\n\r\n`;
+    // 先统一换行为 CRLF，再做点填充（行首单独的 "." → ".."）
+    const body = mail.text.replace(/\r?\n/g, "\r\n").replace(/\r\n\./g, "\r\n..");
+    await writer.write(enc.encode(headers + body + "\r\n.\r\n"));
+    await cmd(null, [250]);
+    await cmd("QUIT", [221]);
   } finally {
-    try { await writer.close(); } catch (_) {}
+    try { writer.releaseLock(); } catch (_) {}
+    try { await socket.close(); } catch (_) {}
   }
-}
-
-async function smtpAfterTls(socket, writer, reader, enc, dec, ctx) {
-  async function readReply() {
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split(/\r?\n/).filter((l) => l.length > 0);
-      const last = lines[lines.length - 1] || "";
-      if (/^\d{3} /.test(last)) break;
-    }
-    return { code: parseInt(buf.slice(0, 3), 10), text: buf };
-  }
-  async function cmd(line, okCodes) {
-    if (line !== null) await writer.write(enc.encode(line + "\r\n"));
-    const reply = await readReply();
-    if (okCodes && !okCodes.includes(reply.code)) {
-      throw new Error(`SMTP ${line} -> ${reply.text.trim().slice(0, 200)}`);
-    }
-    return reply;
-  }
-  try {
-    await cmd(`EHLO wp-to-cf`, [250]);
-    return await smtpConversation({ cmd, writer, enc }, ctx);
-  } finally {
-    try { await writer.close(); } catch (_) {}
-  }
-}
-
-async function smtpConversation({ cmd, writer, enc }, { user, pass, mail }) {
-  if (user && pass) {
-    await cmd(`AUTH LOGIN`, [334]);
-    await cmd(btoa(user), [334]);
-    await cmd(btoa(pass), [235]);
-  }
-  const fromAddr = extractAddr(mail.from);
-  await cmd(`MAIL FROM:<${fromAddr}>`, [250]);
-  for (const rcpt of splitAddrs(mail.to)) {
-    await cmd(`RCPT TO:<${extractAddr(rcpt)}>`, [250, 251]);
-  }
-  await cmd(`DATA`, [354]);
-
-  const headers =
-    `From: ${mail.from}\r\n` +
-    `To: ${mail.to}\r\n` +
-    `Subject: ${encodeHeader(mail.subject)}\r\n` +
-    `MIME-Version: 1.0\r\n` +
-    `Content-Type: text/plain; charset=UTF-8\r\n` +
-    `Content-Transfer-Encoding: 8bit\r\n\r\n`;
-  const body = mail.text.replace(/\r?\n\./g, "\r\n..").replace(/\n/g, "\r\n");
-  await writer.write(enc.encode(headers + body + "\r\n.\r\n"));
-  await cmd(null, [250]);
-  await cmd(`QUIT`, [221]);
 }
 
 /* ------------------------------------------------------------------ *

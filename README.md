@@ -19,6 +19,7 @@
 - **🆕 提交留档** - 发出的邮件内容与状态一并存入 D1，发送失败也可拉取信息人工补救
 - **WooCommerce 支持** - 完整支持产品页面和分类页面导出
 - **Elementor 兼容** - 自动处理 Elementor 构建的页面和轮播组件
+- **GML AI SEO 兼容** - AI SEO 写入完成后可自动刷新对应静态 HTML，静态表单询盘可进入月度 AI 报告
 - **SEO 友好** - 自动生成 sitemap、robots.txt，重写 canonical URL
 - **代码注入** - 支持注入统计代码（Google Analytics、GTM 等）
 - **WordPress 痕迹清理** - 自动移除 WordPress 特征，提升安全性
@@ -128,6 +129,15 @@ Cloudflare Worker ──写入──▶ D1 (submissions, pending)
 ### 防垃圾（可选）
 
 在 **Worker 后端**标签填写 Turnstile Site Key / Secret Key 后，Worker 会校验人机验证。需要你自行在表单页面放置 Turnstile 组件。
+
+### 与 GML AI SEO 联动
+
+如果同站安装 **GML AI SEO v1.10.0+**：
+
+- GML AI SEO 在 AI 标题、描述、FAQ、Schema、BLUF、自动内链或后台手动 SEO meta 保存完成后，会调用 `wptocf_staticize_post`，本插件只为对应文章/页面/产品创建一次普通优先级静态化任务，并刷新首页、分类、标签等关联页面。
+- Worker 动态后端拉回的静态表单提交，会通过 `gml_seo_capture_inquiry` 交给 GML AI SEO 做脱敏、垃圾询盘识别和月度报告分析。
+
+**性能说明：** 联动只发生在后台拉取提交或 GML SEO 的异步/后台保存之后；普通前台页面访问不会因此多跑数据库扫描、AI 请求或 Cloudflare 部署。
 
 ## 🏗️ 架构说明
 
@@ -291,6 +301,11 @@ A: 检查浏览器控制台是否有 404。清空缓存后重新全量上传。
 A: 插件已内置重试机制（最多 3 次）。如持续失败，检查 API Token 权限与 Worker 名称。
 
 ## 📝 更新日志
+
+### v1.6.2 (2026-08-03)
+- 🔗 **GML AI SEO 兼容增强**：新增 `wptocf_staticize_post` 钩子，允许 SEO/翻译/自动化插件在自身异步写入完成后请求刷新对应静态页面
+- 📩 **静态询盘数据联动**：Worker 后端拉回的表单提交会自动转给 GML AI SEO 的询盘洞察，用于月度报告和垃圾询盘识别
+- ⚡ **性能保护**：联动只在后台拉取、AJAX 或 cron 之后运行，普通前台访问不会触发 AI 或静态导出
 
 ### v1.6.1 (2026-07-31)
 - 🌐 **多语言导出加固**:`/{lang}/` URL 展开尊重语言的 `enabled` 开关、跳过源语言冗余副本、防止重复前缀

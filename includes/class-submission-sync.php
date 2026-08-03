@@ -737,6 +737,18 @@ class WP_to_CF_Submission_Sync
         
         // 触发钩子，允许其他插件处理
         do_action('wptocf_form_submission_processed', $submission, $data, $mapping);
+
+        // 如果安装了 GML AI SEO，将静态站询盘同步给其月度报告/垃圾询盘识别。
+        if (has_action('gml_seo_capture_inquiry')) {
+            $source = 'wp_to_cf_static_form';
+            if (!empty($mapping['form_name'])) {
+                $source .= '_' . sanitize_key((string) $mapping['form_name']);
+            } elseif (!empty($submission['form_id'])) {
+                $source .= '_' . sanitize_key((string) $submission['form_id']);
+            }
+
+            do_action('gml_seo_capture_inquiry', $source, $data, false);
+        }
         
         return true;
     }

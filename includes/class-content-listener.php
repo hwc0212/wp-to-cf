@@ -82,6 +82,9 @@ class WP_to_CF_Content_Listener
         
         // 监听文章删除
         add_action('before_delete_post', [$this, 'on_post_delete'], 10, 2);
+
+        // 允许 SEO / 翻译 / 自动化插件在自身异步写入完成后请求重新静态化
+        add_action('wptocf_staticize_post', [$this, 'staticize_post_from_external'], 10, 2);
     }
 
     /**
@@ -169,6 +172,60 @@ class WP_to_CF_Content_Listener
     {
         self::$already_processed = false;
         WP_to_CF_Logger::info('Request lock reset');
+    }
+
+    /**
+     * 外部插件请求刷新单篇静态页面。
+     *
+     * 例如 GML AI SEO 会在 AI 标题、描述、FAQ、Schema 或手动 SEO meta
+     * 写入完成后调用此钩子，避免 Cloudflare 上的静态 HTML 仍是旧 SEO 信息。
+     *
+     * @param int    $post_id 文章 ID
+     * @param string $reason  来源原因
+     * @return void
+     */
+    public function staticize_post_from_external($post_id, $reason = 'external'): void
+    {
+        $post_id = absint($post_id);
+        $reason = is_scalar($reason) ? sanitize_key((string) $reason) : 'external';
+
+        $post = get_post($post_id);
+        if (!$post || $post->post_status !== 'publish') {
+            return;
+        }
+
+        if (!$this->is_supported_post_type($post->post_type)) {
+            WP_to_CF_Logger::info('Ignoring external staticize request for unsupported post type', [
+                'post_id' => $post_id,
+                'post_type' => $post->post_type,
+                'reason' => $reason,
+            ]);
+            return;
+        }
+
+        WP_to_CF_Logger::info('External staticize request accepted', [
+            'post_id' => $post_id,
+            'post_type' => $post->post_type,
+            'reason' => $reason,
+        ]);
+
+        $this->handle_post_update($post);
+    }
+
+    /**
+     * 判断 wp-to-cf 支持静态化的公开内容类型。
+     *
+     * @param string $post_type 文章类型
+     * @return bool
+     */
+    private function is_supported_post_type(string $post_type): bool
+    {
+        $allowed_post_types = ['post', 'page'];
+        if (class_exists('WooCommerce')) {
+            $allowed_post_types[] = 'product';
+        }
+
+        return in_array($post_type, $allowed_post_types, true);
     }
 
     /**
